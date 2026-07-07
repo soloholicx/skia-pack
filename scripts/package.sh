@@ -51,6 +51,12 @@ for mod in skshaper skparagraph skunicode; do
     cp -R "${SKIA_ROOT}/modules/${mod}/include" "${STAGE}/headers/modules/${mod}/include"
 done
 cp "${HB_ROOT}/src/"hb*.h "${STAGE}/headers/"                    # 48 flat HarfBuzz headers
+# The one src/ header the public surface transitively needs:
+# modules/skunicode/include/SkUnicode.h -> "src/base/SkUTF.h" (self-contained,
+# pulls only include/private/base/SkAPI.h). Verified as the ONLY "src/..."
+# spelling reachable from the packaged tree (grep sweep in verify evidence).
+mkdir -p "${STAGE}/headers/src/base"
+cp "${SKIA_ROOT}/src/base/SkUTF.h" "${STAGE}/headers/src/base/"
 
 # ------------------------------------------------------------------- libs ----
 # Every archive the Skia build produced (18 with system-HB — no vendored HB),

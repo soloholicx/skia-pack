@@ -11,7 +11,11 @@
 #     with the absolute path to third_party/harfbuzz/src ("system" HB wiring
 #     without any system pkg-config).
 #   * extra_cflags -mmacosx-version-min=14.0 — pin the deployment target the
-#     kits' own TUs already use.
+#     kits' own TUs already use. Known quirk: Skia's gn/skia/BUILD.gn
+#     unconditionally appends "-target arm64-apple-macos11", which overrides
+#     this flag (clang warns). Effective Skia object min is macOS 11 — same as
+#     both kits' production builds and safe to link into 14.0 consumers; the
+#     flag is kept for the day Skia drops the hardcoded -target.
 #   * skia_enable_pdf=false          — neither kit uses SkPDF; keeps hb-subset
 #     out of Skia's link surface.
 is_official_build=true

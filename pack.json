@@ -1,0 +1,30 @@
+{
+  "_template": "Manifest template — scripts/package.sh emits the resolved copy: embedded inside both artifacts (artifacts: null there; an artifact cannot contain its own digest) and standalone at artifacts/pack.json (fully resolved, attached to the release).",
+  "name": "skia-pack",
+  "version": "150.1.0",
+  "skia": {
+    "commit": "871578a7229026e1ae5bd3654017534bbabf16a1",
+    "milestone": 150
+  },
+  "harfbuzz": {
+    "version": "14.2.0",
+    "commit": "8d24ed6cd6705623dffb73a0355f2ba3274f3389"
+  },
+  "gn_args_file": "gn/macos.gn",
+  "gn_args_sha256": "<sha256 of gn/macos.gn, resolved at package time>",
+  "deps_externals": "<skia DEPS externals commit map, recorded post git-sync-deps>",
+  "toolchain": {
+    "xcode": "<resolved>",
+    "xcode_build": "<resolved>",
+    "clang": "<resolved>",
+    "macos_sdk": "<resolved>",
+    "macos_deployment_target": "14.0"
+  },
+  "platforms": ["macos-arm64"],
+  "libraries": "<lib/*.a list, resolved at package time>",
+  "built_at": "<resolved>",
+  "artifacts": {
+    "macos-arm64-tarball": { "file": "skia-pack-<version>-macos-arm64.tar.gz", "sha256": "<resolved>" },
+    "xcframework": { "file": "SkiaPack.xcframework.zip", "sha256": "<resolved>", "spm_checksum": "<swift package compute-checksum>" }
+  }
+}
