@@ -1,0 +1,12 @@
+# Build trees and packaged artifacts — never committed; releases carry the binaries.
+/build/
+/dist/
+/artifacts/
+
+# SwiftPM
+/.build/
+/.swiftpm/
+
+# Editor/OS noise
+.DS_Store
+*.swp
