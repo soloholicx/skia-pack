@@ -1,0 +1,40 @@
+# skia-pack canonical GN args — macOS arm64, official static build.
+# One arg per line. Lines starting with '#' are comments; scripts/build.sh
+# strips them and joins the rest into the --args string.
+#
+# Baseline: the byte-identical production GN line shared by slate-kit and
+# term-kit (m150 official static build, Metal + HarfBuzz + ICU).
+# Pack deltas (validated by the HB-UNIFY spike, 2026-07-08):
+#   * skia_use_system_harfbuzz=true  — Skia archives carry hb_* as UNDEFINED
+#     symbols; the pack's standalone HarfBuzz 14.2 archive is the one definer.
+#   * extra_cflags -I@HB_INCLUDE@    — @HB_INCLUDE@ is substituted by build.sh
+#     with the absolute path to third_party/harfbuzz/src ("system" HB wiring
+#     without any system pkg-config).
+#   * extra_cflags -mmacosx-version-min=14.0 — pin the deployment target the
+#     kits' own TUs already use.
+#   * skia_enable_pdf=false          — neither kit uses SkPDF; keeps hb-subset
+#     out of Skia's link surface.
+is_official_build=true
+is_component_build=false
+target_cpu="arm64"
+skia_use_metal=true
+skia_use_harfbuzz=true
+skia_use_system_harfbuzz=true
+skia_use_icu=true
+skia_use_system_icu=false
+skia_use_system_libpng=false
+skia_use_system_zlib=false
+skia_use_system_libwebp=false
+skia_use_system_libjpeg_turbo=false
+skia_use_system_expat=false
+skia_use_freetype=false
+skia_use_fontconfig=false
+skia_use_x11=false
+skia_enable_skshaper=true
+skia_enable_skparagraph=true
+skia_enable_pdf=false
+skia_enable_tools=false
+cc="clang"
+cxx="clang++"
+extra_cflags_cc=["-std=c++20"]
+extra_cflags=["-I@HB_INCLUDE@","-mmacosx-version-min=14.0"]

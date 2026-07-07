@@ -1,0 +1,51 @@
+# Release CI: on tag push, run the same five steps release.sh runs locally
+# (build → package → verify → upload → post-verify) on a macOS arm64 runner.
+# The artifact, not the machine, is the contract — a local release from a dev
+# machine is equally valid.
+name: release
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+jobs:
+  release:
+    runs-on: macos-14 # arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Guard — tag must match VERSION
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          [[ "${GITHUB_REF_NAME}" == "${version}" ]] \
+            || { echo "tag ${GITHUB_REF_NAME} != VERSION ${version}" >&2; exit 1; }
+
+      - name: Build
+        run: ./scripts/build.sh
+
+      - name: Package
+        run: ./scripts/package.sh
+
+      - name: Verify (symbol audits + smoke, both artifact forms)
+        run: ./scripts/verify.sh
+
+      - name: Guard — Package.swift checksum matches artifact
+        run: |
+          spm="$(python3 -c "import json; print(json.load(open('artifacts/pack.json'))['artifacts']['xcframework']['spm_checksum'])")"
+          grep -q "checksum: \"${spm}\"" Package.swift \
+            || { echo "Package.swift checksum does not match built artifact" >&2; exit 1; }
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          gh release create "${version}" \
+            --title "skia-pack ${version}" \
+            --notes "Prebuilt Skia + HarfBuzz static artifacts for macOS arm64. See pack.json." \
+            "artifacts/skia-pack-${version}-macos-arm64.tar.gz" \
+            "artifacts/SkiaPack.xcframework.zip" \
+            "artifacts/pack.json"
