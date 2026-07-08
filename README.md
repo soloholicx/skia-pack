@@ -42,11 +42,19 @@ definer. `scripts/verify.sh` enforces this as a release gate.
 ## Building locally
 
 ```bash
-git submodule update --init          # skia @ pinned SHA, harfbuzz @ pinned SHA
-./scripts/build.sh                   # HarfBuzz archive + Skia archives (gn args: gn/macos.gn)
+./scripts/build.sh                   # fetches pinned sources (pins.json → third_party/ clones),
+                                     # then HarfBuzz archive + Skia archives (gn args: gn/macos.gn)
 ./scripts/package.sh                 # artifacts/ tarball + xcframework + pack.json
 ./scripts/verify.sh                  # symbol audits + smoke test on the release bytes
 ```
+
+Sources are **not** submodules — SwiftPM recursively initializes submodules of git
+dependencies, so submodules would make every consumer clone ~1.1 GB of Skia + HarfBuzz
+history just to resolve a ~23 MB binary product. Instead `pins.json` records the upstream
+URL + commit for each input, and `scripts/fetch_sources.sh` (run automatically by
+`build.sh`) materializes them under the gitignored `third_party/` as plain clones.
+`SKIA_PACK_REFERENCE_SKIA`/`SKIA_PACK_REFERENCE_HARFBUZZ` can point at local repos to
+speed up a fresh clone.
 
 Releases are cut with `scripts/release.sh` (tag == version string; assets uploaded via
 `gh release create`; post-verified by a scratch consumer). Artifacts are immutable —

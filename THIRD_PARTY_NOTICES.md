@@ -1,10 +1,11 @@
 # Third-party notices
 
 skia-pack redistributes prebuilt static libraries compiled from the following
-projects. License texts live at the referenced paths inside this repository's
-submodules (initialize with `git submodule update --init`; Skia's bundled
-dependencies appear under `third_party/skia/third_party/externals/` after
-`tools/git-sync-deps`). The two headline licenses are reproduced verbatim below.
+projects. License texts live at the referenced paths inside the pinned source
+checkouts under `third_party/` (fetched by `scripts/fetch_sources.sh` per
+`pins.json`; Skia's bundled dependencies appear under
+`third_party/skia/third_party/externals/` after `tools/git-sync-deps`). The two
+headline licenses are reproduced verbatim below.
 
 | Component | License | License text |
 |---|---|---|

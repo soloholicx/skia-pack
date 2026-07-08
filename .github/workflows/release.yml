@@ -14,14 +14,15 @@ jobs:
     runs-on: macos-14 # arm64
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
 
       - name: Guard — tag must match VERSION
         run: |
           version="$(tr -d '[:space:]' < VERSION)"
           [[ "${GITHUB_REF_NAME}" == "${version}" ]] \
             || { echo "tag ${GITHUB_REF_NAME} != VERSION ${version}" >&2; exit 1; }
+
+      - name: Fetch pinned sources (pins.json → third_party/ clones)
+        run: ./scripts/fetch_sources.sh
 
       - name: Build
         run: ./scripts/build.sh
