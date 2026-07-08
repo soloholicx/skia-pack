@@ -21,7 +21,7 @@ if let localPath = ProcessInfo.processInfo.environment["SKIA_PACK_LOCAL_XCFRAMEW
     binaryTarget = .binaryTarget(
         name: "SkiaPackBinary",
         url: "https://github.com/soloholicx/skia-pack/releases/download/150.1.0/SkiaPack.xcframework.zip",
-        checksum: "1035dffd99eb768ca8965579f918144165607ce460e538fa587686fd7bc48a78")
+        checksum: "195a92f73c996ad008546159b4ccb3f37586b8ab2fc0c8c254190567cf7af5ed")
 }
 
 let package = Package(
