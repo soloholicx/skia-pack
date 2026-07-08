@@ -1,0 +1,13 @@
+{
+  "_comment": "Pinned build inputs, fetched into third_party/ as plain git clones by scripts/fetch_sources.sh. NOT submodules by design: SwiftPM recursively initializes submodules of git dependencies, which would make every consumer clone the full Skia + HarfBuzz history (~1.1 GB) for a ~23 MB binary product.",
+  "skia": {
+    "url": "https://skia.googlesource.com/skia.git",
+    "commit": "871578a7229026e1ae5bd3654017534bbabf16a1",
+    "note": "m150 (SkMilestone.h), canvaskit/0.41.0 lineage; term-kit production pin"
+  },
+  "harfbuzz": {
+    "url": "https://github.com/harfbuzz/harfbuzz.git",
+    "commit": "8d24ed6cd6705623dffb73a0355f2ba3274f3389",
+    "note": "reports 14.2.0; post-14.2.0 main commit, term-kit production pin"
+  }
+}

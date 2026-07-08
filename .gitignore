@@ -3,6 +3,12 @@
 /dist/
 /artifacts/
 
+# Pinned build inputs — plain git clones fetched by scripts/fetch_sources.sh
+# per pins.json. Deliberately NOT submodules: SwiftPM recursively initializes
+# submodules of git dependencies, which would make every consumer clone the
+# full Skia + HarfBuzz history (~1.1 GB) for a ~23 MB binary product.
+/third_party/
+
 # SwiftPM
 /.build/
 /.swiftpm/
