@@ -57,17 +57,30 @@ echo "[release] Package.swift → url=${release_url} checksum=${spm_checksum}"
 
 # 3. Commit + tag. Tag name equals the version string ("150.1.0") — it must
 #    match the download URL path baked into Package.swift.
+#    NOTE (re-runs): if the tag already exists, the artifacts on disk MUST be
+#    the ones whose checksums are committed at the tag — do not rebuild
+#    (build.sh/package.sh mint a fresh built_at ⇒ fresh checksums) and then
+#    upload under an old tag. A botched release is rolled forward as a PATCH.
 if ! git diff --quiet -- Package.swift; then
     git add Package.swift
     git commit -m "release: v${VERSION} — resolve binaryTarget url + checksum"
 fi
-git tag -a "${VERSION}" -m "skia-pack ${VERSION}"
+if ! git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+    git tag -a "${VERSION}" -m "skia-pack ${VERSION}"
+fi
 
-# 4. Create the GitHub release with all three assets.
-gh release create "${VERSION}" \
-    --title "skia-pack ${VERSION}" \
-    --notes "Prebuilt Skia m150 (@$(git -C third_party/skia rev-parse --short HEAD)) + HarfBuzz 14.2.0 static artifacts for macOS arm64. See pack.json for the full manifest." \
-    "${TARBALL}" "${XCZIP}" "${ARTIFACTS}/pack.json"
+# 4. Push the branch and the tag, then create the GitHub release with all
+#    three assets. gh refuses to create a release for a tag that only exists
+#    locally, so the push must come first.
+git push origin main "refs/tags/${VERSION}"
+if gh release view "${VERSION}" >/dev/null 2>&1; then
+    echo "[release] release ${VERSION} already exists on GitHub — skipping create" >&2
+else
+    gh release create "${VERSION}" \
+        --title "skia-pack ${VERSION}" \
+        --notes "Prebuilt Skia m150 (@$(git -C third_party/skia rev-parse --short HEAD)) + HarfBuzz 14.2.0 static artifacts for macOS arm64. See pack.json for the full manifest." \
+        "${TARBALL}" "${XCZIP}" "${ARTIFACTS}/pack.json"
+fi
 
 # 5. Post-verify: scratch consumer resolves the tag and builds against the
 #    released binary artifact.
