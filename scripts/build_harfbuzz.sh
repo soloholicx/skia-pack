@@ -18,8 +18,8 @@ HB_SRC="${PACK_ROOT}/third_party/harfbuzz"
 HB_BUILD="${PACK_ROOT}/build/harfbuzz"
 
 if [[ ! -f "${HB_SRC}/CMakeLists.txt" ]]; then
-    echo "error: harfbuzz submodule not initialized (${HB_SRC})" >&2
-    echo "run: git submodule update --init third_party/harfbuzz" >&2
+    echo "error: harfbuzz sources missing (${HB_SRC})" >&2
+    echo "run: ./scripts/fetch_sources.sh" >&2
     exit 1
 fi
 

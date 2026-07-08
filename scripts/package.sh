@@ -84,6 +84,20 @@ stage = root / "artifacts" / f"skia-pack-{version}-{platform}"
 def run(*argv, cwd=None):
     return subprocess.check_output(argv, cwd=cwd, text=True).strip()
 
+# The manifest records the ACTUAL source state — which must be the pinned one.
+# pins.json is the contract (the repo carries no submodules); a mismatch means
+# the build used sources nobody pinned. Refuse to mint a manifest for that.
+pins = json.loads((root / "pins.json").read_text())
+for name, checkout in (("skia", skia), ("harfbuzz", hb)):
+    pinned = pins[name]["commit"]
+    actual = run("git", "rev-parse", "HEAD", cwd=checkout)
+    if actual != pinned:
+        sys.exit(
+            f"error: third_party/{name} is at {actual} but pins.json pins "
+            f"{pinned} — run ./scripts/fetch_sources.sh (refusing to package "
+            f"unpinned sources)"
+        )
+
 def sha256(path):
     return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 
