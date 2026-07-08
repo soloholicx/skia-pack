@@ -69,18 +69,44 @@ if ! git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
     git tag -a "${VERSION}" -m "skia-pack ${VERSION}"
 fi
 
-# 4. Push the branch and the tag, then create the GitHub release with all
-#    three assets. gh refuses to create a release for a tag that only exists
-#    locally, so the push must come first.
+# 4. Push the branch and the tag, then create the GitHub release and upload
+#    the three assets. gh refuses to create a release for a tag that only
+#    exists locally, so the push must come first. Assets are uploaded
+#    individually (NOT via `gh release create <assets>`): on any upload
+#    failure gh deletes the release it just created, evaporating the whole
+#    step; separate uploads retry independently and are --clobber idempotent.
 git push origin main "refs/tags/${VERSION}"
 if gh release view "${VERSION}" >/dev/null 2>&1; then
     echo "[release] release ${VERSION} already exists on GitHub — skipping create" >&2
 else
     gh release create "${VERSION}" \
         --title "skia-pack ${VERSION}" \
-        --notes "Prebuilt Skia m150 (@$(git -C third_party/skia rev-parse --short HEAD)) + HarfBuzz 14.2.0 static artifacts for macOS arm64. See pack.json for the full manifest." \
-        "${TARBALL}" "${XCZIP}" "${ARTIFACTS}/pack.json"
+        --notes "Prebuilt Skia m150 (@$(git -C third_party/skia rev-parse --short HEAD)) + HarfBuzz 14.2.0 static artifacts for macOS arm64. See pack.json for the full manifest."
 fi
+
+REPO_PATH="${REPO_URL#https://github.com/}"
+upload_asset() {
+    local asset="$1" name attempt rid
+    name="$(basename "${asset}")"
+    for attempt in 1 2 3; do
+        if gh release upload "${VERSION}" "${asset}" --clobber; then
+            return 0
+        fi
+        echo "[release] upload failed (attempt ${attempt}): ${name}" >&2
+        sleep 5
+    done
+    # Fallback: raw upload with explicit octet-stream. Observed in the wild:
+    # a proxy EOF-kills sniffed-content-type uploads of small .json assets
+    # while binary zips sail through; forcing octet-stream dodges it.
+    echo "[release] falling back to raw octet-stream upload: ${name}" >&2
+    rid="$(gh api "repos/${REPO_PATH}/releases/tags/${VERSION}" --jq .id)"
+    gh api --method POST -H "Content-Type: application/octet-stream" \
+        "https://uploads.github.com/repos/${REPO_PATH}/releases/${rid}/assets?name=${name}" \
+        --input "${asset}" >/dev/null
+}
+upload_asset "${TARBALL}"
+upload_asset "${XCZIP}"
+upload_asset "${ARTIFACTS}/pack.json"
 
 # 5. Post-verify: scratch consumer resolves the tag and builds against the
 #    released binary artifact.
