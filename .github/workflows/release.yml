@@ -1,52 +1,76 @@
-# Release CI: on tag push, run the same five steps release.sh runs locally
-# (build → package → verify → upload → post-verify) on a macOS arm64 runner.
-# The artifact, not the machine, is the contract — a local release from a dev
-# machine is equally valid.
+# READ-ONLY verification of a published release.
+#
+# Releases are cut locally by scripts/release.sh, which packages once, freezes
+# the bytes, uploads them to a DRAFT and publishes only after reading every
+# asset back. This workflow never builds Skia, never packages and never
+# uploads: a rebuild cannot reproduce the released bytes (builds are not
+# bit-reproducible), so a CI that rebuilt could only ever disagree with the
+# checksum committed at the tag.
+#
+# It runs when the release is PUBLISHED — i.e. only once all assets are in
+# place — and checks, on a clean runner, that the tag, Package.swift, pack.json
+# and the downloadable bytes agree, then runs the release gate and the SwiftPM
+# consumer check against those bytes. `workflow_dispatch` re-verifies a
+# released version on demand — 150.2.0 or later only: the job runs the scripts
+# AT the tag, and earlier tags do not contain them.
 name: release
 
 on:
-  push:
-    tags:
-      - "[0-9]+.[0-9]+.[0-9]+"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released version (tag) to verify — 150.2.0 or later"
+        required: true
+
+permissions:
+  contents: read
 
 jobs:
-  release:
-    runs-on: macos-14 # arm64
+  verify-published:
+    runs-on: macos-26 # arm64
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      VERSION: ${{ github.event.release.tag_name || inputs.version }}
+      # PINNED. A runner image without them fails here; nothing is substituted.
+      SIM_RUNTIME: com.apple.CoreSimulator.SimRuntime.iOS-26-5
+      SIM_DEVICE_TYPE: com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.VERSION }}
 
-      - name: Guard — tag must match VERSION
+      - name: Toolchain
         run: |
-          version="$(tr -d '[:space:]' < VERSION)"
-          [[ "${GITHUB_REF_NAME}" == "${version}" ]] \
-            || { echo "tag ${GITHUB_REF_NAME} != VERSION ${version}" >&2; exit 1; }
+          set -euo pipefail
+          xcodebuild -version
+          swift --version
+          xcrun simctl list runtimes | grep -q "$SIM_RUNTIME" \
+            || { echo "::error::ENVIRONMENT: pinned runtime $SIM_RUNTIME is not on this image"; exit 1; }
 
-      - name: Fetch pinned sources (pins.json → third_party/ clones)
-        run: ./scripts/fetch_sources.sh
-
-      - name: Build
-        run: ./scripts/build.sh
-
-      - name: Package
-        run: ./scripts/package.sh
-
-      - name: Verify (symbol audits + smoke, both artifact forms)
-        run: ./scripts/verify.sh
-
-      - name: Guard — Package.swift checksum matches artifact
+      - name: Boot the pinned simulator
         run: |
-          spm="$(python3 -c "import json; print(json.load(open('artifacts/pack.json'))['artifacts']['xcframework']['spm_checksum'])")"
-          grep -q "checksum: \"${spm}\"" Package.swift \
-            || { echo "Package.swift checksum does not match built artifact" >&2; exit 1; }
+          set -euo pipefail
+          udid="$(xcrun simctl create skia-pack-verify "$SIM_DEVICE_TYPE" "$SIM_RUNTIME")"
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          echo "SKIA_PACK_SIM_UDID=$udid" >> "$GITHUB_ENV"
 
-      - name: Upload release assets
+      - name: Verify the published assets (downloads only — no build, no upload)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          version="$(tr -d '[:space:]' < VERSION)"
-          gh release create "${version}" \
-            --title "skia-pack ${version}" \
-            --notes "Prebuilt Skia + HarfBuzz static artifacts for macOS arm64. See pack.json." \
-            "artifacts/skia-pack-${version}-macos-arm64.tar.gz" \
-            "artifacts/SkiaPack.xcframework.zip" \
-            "artifacts/pack.json"
+        run: ./scripts/verify_published.sh "$VERSION"
+
+      - name: Keep the verification logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-published-${{ env.VERSION }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            build/verify-published/*/pack.json
+            build/verify/*.log
+            build/verify-consumer/*.log

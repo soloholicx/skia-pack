@@ -9,5 +9,20 @@
     "url": "https://github.com/harfbuzz/harfbuzz.git",
     "commit": "8d24ed6cd6705623dffb73a0355f2ba3274f3389",
     "note": "reports 14.2.0; post-14.2.0 main commit, term-kit production pin"
+  },
+  "macos_base": {
+    "version": "150.1.0",
+    "note": "The macos-arm64 slice of this release is the 150.1.0 one, reused byte-for-byte rather than rebuilt (Skia/HarfBuzz pins are unchanged, and a rebuild is not bit-reproducible). scripts/fetch_macos_base.sh downloads + hash-verifies these two assets; scripts/package.sh re-wraps them; scripts/verify.sh proves every archive and header is identical. Delete this key to go back to building macOS from source (required whenever the skia/harfbuzz pins or gn/macos.gn change).",
+    "tarball": {
+      "url": "https://github.com/soloholicx/skia-pack/releases/download/150.1.0/skia-pack-150.1.0-macos-arm64.tar.gz",
+      "sha256": "ea6d9dbedf8375fa582bf7dcc6cc77e0c5362f17c6bbb67f6396914761be897e"
+    },
+    "xcframework": {
+      "url": "https://github.com/soloholicx/skia-pack/releases/download/150.1.0/SkiaPack.xcframework.zip",
+      "sha256": "195a92f73c996ad008546159b4ccb3f37586b8ab2fc0c8c254190567cf7af5ed"
+    },
+    "skia_commit": "871578a7229026e1ae5bd3654017534bbabf16a1",
+    "harfbuzz_commit": "8d24ed6cd6705623dffb73a0355f2ba3274f3389",
+    "gn_args_sha256": "bf7a75d0871364957084ca118d764de784855a86d0b7633c84bf14d2eafbd1b9"
   }
 }

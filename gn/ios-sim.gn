@@ -1,0 +1,48 @@
+# skia-pack canonical GN args — iOS Simulator arm64 (Apple Silicon hosts only), official static build.
+# One arg per line. Lines starting with '#' are comments; scripts/build.sh
+# strips them and joins the rest into the --args string.
+#
+# Derived from gn/macos.gn: every arg below the marker is the macOS line
+# verbatim (scripts/verify.sh fails if the two drift), followed by the iOS
+# deltas:
+#   * target_os="ios", ios_use_simulator=true
+#   * ios_min_target="17.0"          — the deployment target. Unlike macOS
+#     (where Skia hardcodes -target arm64-apple-macos11), Skia's iOS toolchain
+#     honours it: every object carries LC_BUILD_VERSION minos 17.0, which
+#     scripts/verify.sh asserts on the release bytes.
+#   * skia_ios_use_signing=false     — static archives only; nothing to sign.
+#   * extra_cflags carries only the HarfBuzz include (no -mmacosx-version-min).
+# Known quirk: for target_cpu="arm64" Skia's gn/skia/BUILD.gn passes BOTH
+# -arch arm64 and -arch arm64e, so the archives come out fat (arm64 + arm64e).
+# scripts/package.sh thins every archive to arm64 before merging; arm64e is
+# not shipped.
+# --- shared with gn/macos.gn (verbatim) ---
+is_official_build=true
+is_component_build=false
+target_cpu="arm64"
+skia_use_metal=true
+skia_use_harfbuzz=true
+skia_use_system_harfbuzz=true
+skia_use_icu=true
+skia_use_system_icu=false
+skia_use_system_libpng=false
+skia_use_system_zlib=false
+skia_use_system_libwebp=false
+skia_use_system_libjpeg_turbo=false
+skia_use_system_expat=false
+skia_use_freetype=false
+skia_use_fontconfig=false
+skia_use_x11=false
+skia_enable_skshaper=true
+skia_enable_skparagraph=true
+skia_enable_pdf=false
+skia_enable_tools=false
+cc="clang"
+cxx="clang++"
+extra_cflags_cc=["-std=c++20"]
+# --- iOS deltas ---
+target_os="ios"
+ios_use_simulator=true
+ios_min_target="17.0"
+skia_ios_use_signing=false
+extra_cflags=["-I@HB_INCLUDE@"]
