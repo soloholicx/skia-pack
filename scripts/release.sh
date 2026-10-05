@@ -44,6 +44,19 @@
 # replaced or deleted — a mismatch there is reported and left alone.
 # A published release is immutable: a botched one is rolled forward as a PATCH.
 #
+# What the script holds on to between steps (artifacts/release-<version>.state):
+# the release COMMIT and the GitHub release ID. A resume must be standing on
+# that commit, and the draft it continues must be that release, still a draft,
+# still targeting that commit — all checked BEFORE anything is uploaded or
+# published, and re-checked immediately before every single mutation. A failed
+# query is never read as "no release": anything but a definite answer stops.
+#
+# Limits, stated plainly. artifacts/release-<version>.lock keeps two runs on
+# THIS machine apart. Against another machine or a click in the web UI, the
+# re-check narrows the window to one API call but cannot close it — only
+# GitHub's server-side "immutable releases" repository setting makes a
+# published release unmodifiable. Enable it for this repo.
+#
 # Needs a booted iOS simulator (SKIA_PACK_SIM_UDID=<udid>, else any booted
 # device): verify.sh runs the simulator slice's smoke test inside it.
 set -euo pipefail
@@ -76,16 +89,41 @@ cd "${PACK_ROOT}"
 refuse() { echo "release: REFUSED — $*" >&2; exit 1; }
 sha_of() { shasum -a 256 "$1" | awk '{print $1}'; }
 
-# none | draft | published
-release_state() {
-    local draft
-    if ! draft="$(gh release view "${VERSION}" --json isDraft --jq .isDraft 2>/dev/null)"; then
-        echo none; return
+# query_release — one authoritative read of the release. Sets:
+#   REL_STATE none|draft|published · REL_ID · REL_TARGET · REL_ASSETS (comma list)
+# "none" ONLY when GitHub positively answered "release not found". A network,
+# auth, permission or server error is not an answer and stops the script.
+query_release() {
+    local out err rc=0
+    err="$(mktemp "${TMPDIR:-/tmp}/skia-pack-gh.XXXXXX")"
+    out="$(gh release view "${VERSION}" --json databaseId,isDraft,targetCommitish,assets \
+              --jq '[.databaseId, .isDraft, .targetCommitish, ([.assets[].name] | join(","))] | map(tostring) | join("|")' 2>"${err}")" || rc=$?
+    if [[ ${rc} -ne 0 ]]; then
+        if grep -qi '^release not found' "${err}"; then
+            rm -f "${err}"
+            REL_STATE=none; REL_ID=""; REL_TARGET=""; REL_ASSETS=""
+            return 0
+        fi
+        local why; why="$(tr '\n' ' ' < "${err}")"; rm -f "${err}"
+        refuse "could not determine the state of release ${VERSION} (gh exit ${rc}: ${why:-no message}) — not assuming it does not exist"
     fi
-    [[ "${draft}" == "true" ]] && echo draft || echo published
+    rm -f "${err}"
+    local draft
+    # '|' (not a tab): tab is IFS whitespace, so an empty field would silently shift the rest.
+    IFS='|' read -r REL_ID draft REL_TARGET REL_ASSETS <<< "${out}"
+    [[ "${REL_ID}" =~ ^[0-9]+$ && -n "${REL_TARGET}" && ( "${draft}" == "true" || "${draft}" == "false" ) ]] \
+        || refuse "unintelligible answer for release ${VERSION}: '${out}'"
+    [[ "${draft}" == "true" ]] && REL_STATE=draft || REL_STATE=published
 }
+has_asset() { [[ ",${REL_ASSETS}," == *",$1,"* ]]; }
+STATE_FILE="${ARTIFACTS}/release-${VERSION}.state"
+state_get() { [[ -f "${STATE_FILE}" ]] && sed -n "s/^$1=//p" "${STATE_FILE}" | tail -1 || true; }
+state_set() { mkdir -p "${ARTIFACTS}"; echo "$1=$2" >> "${STATE_FILE}"; }
 remote_tag_commit() { # peeled commit of the remote tag, empty if the tag does not exist
-    git ls-remote --tags origin "refs/tags/${VERSION}" "refs/tags/${VERSION}^{}" | awk 'END{print $1}'
+    local out
+    out="$(git ls-remote --tags origin "refs/tags/${VERSION}" "refs/tags/${VERSION}^{}")" \
+        || refuse "could not list tags on origin — not assuming tag ${VERSION} does not exist"
+    awk 'END{print $1}' <<< "${out}"
 }
 manifest_field() { # url | checksum as committed in Package.swift
     sed -n "s/.*$1: \"\\([^\"]*\\)\".*/\\1/p" Package.swift | head -1
@@ -103,14 +141,17 @@ verify_frozen() {
 # ------------------------------------------------------------ 0. preflight ----
 [[ -z "$(git status --porcelain)" ]] || refuse "working tree is not clean (commit or stash first)"
 branch="$(git rev-parse --abbrev-ref HEAD)"
-[[ "${branch}" == "${RELEASE_BRANCH}" ]] || refuse "on branch '${branch}', releases are cut from '${RELEASE_BRANCH}'"
-git fetch --quiet origin "${RELEASE_BRANCH}"
+git fetch --quiet origin "${RELEASE_BRANCH}" || refuse "could not fetch origin/${RELEASE_BRANCH}"
 head_commit="$(git rev-parse HEAD)"
 origin_commit="$(git rev-parse "origin/${RELEASE_BRANCH}")"
-state="$(release_state)"
+query_release
+state="${REL_STATE}"
 tag_commit="$(remote_tag_commit)"
+recorded_commit="$(state_get release_commit)"
+recorded_id="$(state_get release_id)"
 
 if [[ "${MODE}" == "new" ]]; then
+    [[ "${branch}" == "${RELEASE_BRANCH}" ]] || refuse "on branch '${branch}', releases are cut from '${RELEASE_BRANCH}'"
     [[ "${head_commit}" == "${origin_commit}" ]] \
         || refuse "HEAD ${head_commit:0:7} is not origin/${RELEASE_BRANCH} ${origin_commit:0:7} (pull/push first)"
     [[ -z "${tag_commit}" ]] || refuse "tag ${VERSION} already exists on origin — a published version is immutable; bump VERSION"
@@ -118,31 +159,65 @@ if [[ "${MODE}" == "new" ]]; then
         && refuse "tag ${VERSION} already exists locally — bump VERSION, or delete the stray local tag if it was never pushed"
     [[ "${state}" == "none" ]] \
         || refuse "a ${state} GitHub release ${VERSION} already exists — to continue an interrupted release use --resume; otherwise bump VERSION"
-    [[ ! -e "${FROZEN}" ]] \
-        || refuse "frozen artifacts for ${VERSION} already exist at ${FROZEN} — use --resume to continue that release; delete the directory only if you are certain it was never uploaded"
+    [[ ! -e "${FROZEN}" && ! -e "${STATE_FILE}" ]] \
+        || refuse "frozen artifacts for ${VERSION} already exist at ${FROZEN} — use --resume to continue that release; delete them only if you are certain nothing was ever uploaded"
 else
     verify_frozen
-    git merge-base --is-ancestor "${origin_commit}" "${head_commit}" \
-        || refuse "origin/${RELEASE_BRANCH} ${origin_commit:0:7} is not an ancestor of HEAD ${head_commit:0:7}"
     frozen_spm="$(swift package compute-checksum "${FROZEN}/SkiaPack.xcframework.zip")"
     committed_spm="$(manifest_field checksum)"
-    if [[ "${committed_spm}" == "${frozen_spm}" ]]; then
-        [[ "$(manifest_field url)" == "${RELEASE_URL}" ]] || refuse "Package.swift checksum is the frozen one but its url is not ${RELEASE_URL}"
+    if [[ -n "${recorded_commit}" ]]; then
+        # The release commit exists. A resume must stand exactly on it: if main
+        # moved on, HEAD is some other commit and must not become the release.
+        [[ "${head_commit}" == "${recorded_commit}" ]] \
+            || refuse "HEAD ${head_commit:0:7} is not the release commit ${recorded_commit:0:7} recorded for ${VERSION} — check that commit out (git checkout --detach ${recorded_commit:0:7}) and resume from there"
+        [[ "${committed_spm}" == "${frozen_spm}" && "$(manifest_field url)" == "${RELEASE_URL}" ]] \
+            || refuse "the recorded release commit's Package.swift does not name the frozen zip (${frozen_spm:0:12}…)"
+        if [[ "${branch}" != "${RELEASE_BRANCH}" ]]; then
+            # Detached on the release commit is fine once that commit is on origin/main.
+            git merge-base --is-ancestor "${recorded_commit}" "${origin_commit}" \
+                || refuse "on '${branch}', and the release commit ${recorded_commit:0:7} is not on origin/${RELEASE_BRANCH}"
+        fi
         manifest_resolved=1
     else
-        # Interrupted between freeze and commit: only acceptable if nothing of
-        # this version is public yet.
+        # Interrupted between freeze and commit: nothing of this version may be public yet.
+        [[ "${branch}" == "${RELEASE_BRANCH}" ]] || refuse "on branch '${branch}', releases are cut from '${RELEASE_BRANCH}'"
+        [[ "${head_commit}" == "${origin_commit}" ]] \
+            || refuse "no release commit is recorded for ${VERSION}, and HEAD ${head_commit:0:7} is not origin/${RELEASE_BRANCH} ${origin_commit:0:7}"
         [[ -z "${tag_commit}" && "${state}" == "none" ]] \
-            || refuse "Package.swift checksum ${committed_spm:0:12}… is not the frozen zip's ${frozen_spm:0:12}…, yet a tag or release for ${VERSION} exists — the frozen artifacts are not the ones this version was cut from"
+            || refuse "a tag or release for ${VERSION} exists but no release commit is recorded here (${STATE_FILE}) — these frozen artifacts are not the ones this version was cut from"
+        [[ "${committed_spm}" != "${frozen_spm}" ]] \
+            || refuse "Package.swift already names the frozen zip but no release commit is recorded (a run died between commit and record). If HEAD ${head_commit:0:7} IS that release commit, record it: echo release_commit=${head_commit} >> ${STATE_FILE}"
         manifest_resolved=0
+    fi
+    if [[ "${state}" != "none" ]]; then
+        # The release this resume would continue must be THE one this version was cut as.
+        [[ "${REL_TARGET}" == "${recorded_commit}" ]] \
+            || refuse "the ${state} release ${VERSION} targets ${REL_TARGET:0:12}, not the recorded release commit ${recorded_commit:0:7} — nothing uploaded, nothing published"
+        [[ -z "${recorded_id}" || "${REL_ID}" == "${recorded_id}" ]] \
+            || refuse "release ${VERSION} is now id ${REL_ID}, this release was created as id ${recorded_id} — it was deleted and recreated by someone else"
     fi
     if [[ -n "${tag_commit}" ]]; then
         [[ "${state}" == "published" ]] || refuse "tag ${VERSION} exists on origin but the release is '${state}' — inconsistent, resolve by hand"
-        [[ "${tag_commit}" == "${head_commit}" ]] || refuse "tag ${VERSION} points at ${tag_commit:0:7}, not HEAD ${head_commit:0:7}"
+        [[ "${tag_commit}" == "${recorded_commit}" ]] || refuse "tag ${VERSION} points at ${tag_commit:0:7}, not the release commit ${recorded_commit:0:7}"
     fi
 fi
 echo "[release] preflight OK (${MODE}): version ${VERSION}, HEAD ${head_commit:0:7}, release state ${state}"
 if [[ "${CHECK_ONLY}" == "1" ]]; then exit 0; fi
+
+# One release run per machine at a time.
+mkdir -p "${ARTIFACTS}"
+LOCK="${ARTIFACTS}/release-${VERSION}.lock"
+if ! mkdir "${LOCK}" 2>/dev/null; then
+    other="$(cat "${LOCK}/pid" 2>/dev/null || true)"
+    if [[ -n "${other}" ]] && kill -0 "${other}" 2>/dev/null; then
+        refuse "another release.sh (pid ${other}) is running for ${VERSION}"
+    fi
+    echo "[release] taking over a stale lock (pid ${other:-unknown} is gone)" >&2
+    rm -rf "${LOCK}"; mkdir "${LOCK}"
+fi
+echo $$ > "${LOCK}/pid"
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/skia-pack-release.XXXXXX")"
+trap 'rm -rf "${scratch}" "${LOCK}"' EXIT
 
 # ------------------------------------- 1. build, package (once), verify -------
 if [[ "${MODE}" == "new" ]]; then
@@ -189,82 +264,115 @@ manifest.write_text(text)
 PY
     git add Package.swift
     git commit -m "release: v${VERSION} — resolve binaryTarget url + checksum"
+    state_set release_commit "$(git rev-parse HEAD)"
     echo "[release] Package.swift → url=${RELEASE_URL} checksum=${spm_checksum}"
 fi
-release_commit="$(git rev-parse HEAD)"
-if [[ "$(git rev-parse "origin/${RELEASE_BRANCH}")" != "${release_commit}" ]]; then
-    git push origin "HEAD:refs/heads/${RELEASE_BRANCH}"
+release_commit="$(state_get release_commit)"
+[[ "$(git rev-parse HEAD)" == "${release_commit}" ]] || refuse "HEAD is not the recorded release commit ${release_commit:0:7}"
+if ! git merge-base --is-ancestor "${release_commit}" "$(git rev-parse "origin/${RELEASE_BRANCH}")"; then
+    git push origin "${release_commit}:refs/heads/${RELEASE_BRANCH}"
 fi
 
 # ------------------------------------------- 4. draft release + frozen assets ----
-state="$(release_state)"
-if [[ "${state}" == "none" ]]; then
+query_release
+if [[ "${REL_STATE}" == "none" ]]; then
     # --target pins the commit the tag will be created at when the draft is
     # published; no tag exists until then.
     gh release create "${VERSION}" --draft --target "${release_commit}" \
         --title "skia-pack ${VERSION}" \
         --notes "Prebuilt Skia m150 (@$(sed -n 's/.*"commit": "\([0-9a-f]\{7\}\).*/\1/p' pins.json | head -1)) + HarfBuzz 14.2.0 static artifacts: macOS arm64 (tarball + xcframework slice), iOS arm64 and iOS Simulator arm64 (xcframework slices; simulator on Apple Silicon hosts only). See pack.json for the full manifest."
-    state="draft"
+    query_release
+    [[ "${REL_STATE}" == "draft" ]] || refuse "the release just created is '${REL_STATE}', expected a draft"
+    state_set release_id "${REL_ID}"
 fi
+BOUND_ID="$(state_get release_id)"
+if [[ -z "${BOUND_ID}" ]]; then        # a draft made by a run that died before recording its id
+    BOUND_ID="${REL_ID}"; state_set release_id "${BOUND_ID}"
+fi
+ENTRY_STATE="${REL_STATE}"
 
-REPO_PATH="${REPO_URL#https://github.com/}"
-scratch="$(mktemp -d "${TMPDIR:-/tmp}/skia-pack-release.XXXXXX")"
-trap 'rm -rf "${scratch}"' EXIT
-remote_sha() { # sha256 of the asset as GitHub serves it; "absent" if not there
+# The release must be the bound one and target the release commit — in either state.
+check_bound() {
+    [[ "${REL_STATE}" != "none" ]] || refuse "release ${VERSION} disappeared (it was id ${BOUND_ID})"
+    [[ "${REL_ID}" == "${BOUND_ID}" ]] || refuse "release ${VERSION} is now id ${REL_ID}, not the bound id ${BOUND_ID} — it was replaced by someone else"
+    [[ "${REL_TARGET}" == "${release_commit}" ]] \
+        || refuse "release ${VERSION} targets ${REL_TARGET:0:12}, not the release commit ${release_commit:0:7}"
+}
+# Called immediately before EVERY mutation: a fresh read, and it must still be our draft.
+require_draft() {
+    query_release
+    check_bound
+    [[ "${REL_STATE}" == "draft" ]] \
+        || refuse "release ${VERSION} is no longer a draft (published elsewhere while this run was working) — not touching it: $1"
+}
+remote_sha() { # sha256 of a LISTED asset as GitHub serves it; a failed download is an error, not "absent"
     local name="$1" dir="${scratch}/dl-$RANDOM"
     mkdir -p "${dir}"
-    if gh release download "${VERSION}" --pattern "${name}" --dir "${dir}" >/dev/null 2>&1 && [[ -f "${dir}/${name}" ]]; then
-        sha_of "${dir}/${name}"
-    else
-        echo absent
-    fi
+    gh release download "${VERSION}" --pattern "${name}" --dir "${dir}" >/dev/null 2>&1 && [[ -f "${dir}/${name}" ]] \
+        || refuse "asset ${name} is listed on release ${VERSION} but could not be downloaded — not assuming anything about it"
+    sha_of "${dir}/${name}"
     rm -rf "${dir}"
 }
-upload_asset() {
-    local name="$1" want got attempt rid
-    want="$(sha_of "${FROZEN}/${name}")"
-    for attempt in 1 2 3 4; do
-        got="$(remote_sha "${name}")"
-        if [[ "${got}" == "${want}" ]]; then
-            echo "[release] asset ok: ${name}"
-            return 0
-        fi
-        if [[ "${got}" != "absent" ]]; then
-            # Present with other bytes (a torn upload, or a foreign file).
-            [[ "${state}" == "draft" ]] \
-                || refuse "PUBLISHED asset ${name} is ${got:0:12}…, frozen is ${want:0:12}… — published assets are never replaced; this version is burnt, roll forward with a PATCH"
-            echo "[release] draft asset ${name} has wrong bytes (${got:0:12}…) — deleting it from the draft" >&2
-            gh release delete-asset "${VERSION}" "${name}" --yes
-        elif [[ "${state}" != "draft" ]]; then
-            refuse "PUBLISHED release ${VERSION} is missing asset ${name} — nothing is uploaded to a published release; roll forward with a PATCH"
-        fi
-        (( attempt <= 3 )) || break
-        # No --clobber anywhere: the only deletion is the explicit draft-only one above.
-        if (( attempt < 3 )); then
-            gh release upload "${VERSION}" "${FROZEN}/${name}" || { echo "[release] upload failed (attempt ${attempt}): ${name}" >&2; sleep 5; }
-        else
-            # Last resort: raw upload with explicit octet-stream. Observed in
-            # the wild: a proxy EOF-kills sniffed-content-type uploads of small
-            # .json assets while binary zips sail through.
-            echo "[release] falling back to raw octet-stream upload: ${name}" >&2
-            rid="$(gh api "repos/${REPO_PATH}/releases/tags/${VERSION}" --jq .id 2>/dev/null \
-                   || gh release view "${VERSION}" --json databaseId --jq .databaseId)"
-            gh api --method POST -H "Content-Type: application/octet-stream" \
-                "https://uploads.github.com/repos/${REPO_PATH}/releases/${rid}/assets?name=${name}" \
-                --input "${FROZEN}/${name}" >/dev/null || true
-        fi
+query_release; check_bound
+
+if [[ "${ENTRY_STATE}" == "published" ]]; then
+    # Already public: read-only from here on. Report, never repair.
+    for name in "${ASSETS[@]}"; do
+        has_asset "${name}" || refuse "PUBLISHED release ${VERSION} is missing asset ${name} — nothing is uploaded to a published release; roll forward with a PATCH"
+        got="$(remote_sha "${name}")"; want="$(sha_of "${FROZEN}/${name}")"
+        [[ "${got}" == "${want}" ]] \
+            || refuse "PUBLISHED asset ${name} is ${got:0:12}…, frozen is ${want:0:12}… — published assets are never replaced; this version is burnt, roll forward with a PATCH"
     done
-    refuse "could not get ${name} onto the release with the frozen bytes — fix the cause and run release.sh --resume"
-}
-for name in "${ASSETS[@]}"; do upload_asset "${name}"; done
-# Final read-back of all three before anything becomes public.
-for name in "${ASSETS[@]}"; do
-    [[ "$(remote_sha "${name}")" == "$(sha_of "${FROZEN}/${name}")" ]] || refuse "read-back of ${name} does not match the frozen bytes"
-done
+else
+    upload_asset() {
+        local name="$1" want got attempt
+        want="$(sha_of "${FROZEN}/${name}")"
+        for attempt in 1 2 3; do
+            require_draft "checking ${name}"
+            if has_asset "${name}"; then
+                got="$(remote_sha "${name}")"
+                if [[ "${got}" == "${want}" ]]; then
+                    echo "[release] asset ok: ${name}"
+                    return 0
+                fi
+                # A torn upload (or a foreign file) on OUR DRAFT. The download above took
+                # time: confirm it is still our draft right before deleting.
+                echo "[release] draft asset ${name} has wrong bytes (${got:0:12}…) — deleting it from the draft" >&2
+                require_draft "deleting ${name}"
+                gh release delete-asset "${VERSION}" "${name}" --yes
+            fi
+            require_draft "uploading ${name}"
+            # No --clobber anywhere: the only deletion is the explicit draft-only one above.
+            if (( attempt < 3 )); then
+                gh release upload "${VERSION}" "${FROZEN}/${name}" \
+                    || { echo "[release] upload failed (attempt ${attempt}): ${name}" >&2; sleep "${SKIA_PACK_RELEASE_RETRY_SLEEP:-5}"; }
+            else
+                # Last resort: raw upload with explicit octet-stream, addressed to the BOUND
+                # release id. Observed in the wild: a proxy EOF-kills sniffed-content-type
+                # uploads of small .json assets while binary zips sail through.
+                echo "[release] falling back to raw octet-stream upload: ${name}" >&2
+                gh api --method POST -H "Content-Type: application/octet-stream" \
+                    "https://uploads.github.com/repos/${REPO_URL#https://github.com/}/releases/${BOUND_ID}/assets?name=${name}" \
+                    --input "${FROZEN}/${name}" >/dev/null || echo "[release] raw upload failed: ${name}" >&2
+            fi
+        done
+        require_draft "final check of ${name}"
+        has_asset "${name}" && [[ "$(remote_sha "${name}")" == "${want}" ]] && { echo "[release] asset ok: ${name}"; return 0; }
+        refuse "could not get ${name} onto the draft with the frozen bytes — fix the cause and run release.sh --resume"
+    }
+    for name in "${ASSETS[@]}"; do upload_asset "${name}"; done
+    # Final read-back of all three before anything becomes public.
+    require_draft "final read-back"
+    for name in "${ASSETS[@]}"; do
+        has_asset "${name}" && [[ "$(remote_sha "${name}")" == "$(sha_of "${FROZEN}/${name}")" ]] \
+            || refuse "read-back of ${name} does not match the frozen bytes"
+    done
+fi
 echo "[release] all ${#ASSETS[@]} assets on the release match the frozen bytes"
 
 # --------------------------------------------------------------- 5. publish ----
-if [[ "${state}" == "draft" ]]; then
+if [[ "${ENTRY_STATE}" != "published" ]]; then
+    require_draft "publishing"          # still ours, still a draft, still targeting the release commit
     gh release edit "${VERSION}" --draft=false
     echo "[release] published ${VERSION}"
 fi

@@ -6,7 +6,9 @@
 #   verify_published.sh <version>
 #
 # Run from a checkout OF THE RELEASE TAG (the workflow checks the tag out), so
-# VERSION, Package.swift and the verify scripts are the released ones.
+# VERSION, Package.swift and the verify scripts are the released ones. That
+# also bounds what can be verified: only tags that CONTAIN this script
+# (150.2.0 onward) — 150.1.0 and earlier predate it.
 #
 #   1. consistency   VERSION == <version>; Package.swift's url is this
 #                    version's and its checksum equals the downloaded zip's;
@@ -33,30 +35,33 @@ VERSION="$(tr -d '[:space:]' < VERSION)"
 TARBALL="skia-pack-${VERSION}-macos-arm64.tar.gz"
 ZIP="SkiaPack.xcframework.zip"
 
-# Downloaded bytes go where verify.sh reads its inputs. Nothing else may be there.
-rm -rf artifacts
-mkdir -p artifacts
+# The downloaded bytes get a directory of their own. artifacts/ is never
+# touched: on a release machine it holds the frozen set (artifacts/release-*/)
+# that an interrupted release resumes from.
+DL="${PACK_ROOT}/build/verify-published/${VERSION}"
+rm -rf "${DL}"
+mkdir -p "${DL}"
 if [[ -n "${SKIA_PACK_PUBLISHED_ASSETS_DIR:-}" ]]; then
     for name in "${TARBALL}" "${ZIP}" pack.json; do
-        cp "${SKIA_PACK_PUBLISHED_ASSETS_DIR}/${name}" "artifacts/${name}" || fail "asset ${name} not in ${SKIA_PACK_PUBLISHED_ASSETS_DIR}"
+        cp "${SKIA_PACK_PUBLISHED_ASSETS_DIR}/${name}" "${DL}/${name}" || fail "asset ${name} not in ${SKIA_PACK_PUBLISHED_ASSETS_DIR}"
     done
 else
     for name in "${TARBALL}" "${ZIP}" pack.json; do
-        gh release download "${VERSION}" --pattern "${name}" --dir artifacts || fail "release ${VERSION} has no asset ${name}"
+        gh release download "${VERSION}" --pattern "${name}" --dir "${DL}" || fail "could not download asset ${name} of release ${VERSION}"
     done
 fi
 
 # ---- 1. the tag, the manifest and the bytes agree -----------------------------
 want_url="https://github.com/soloholicx/skia-pack/releases/download/${VERSION}/${ZIP}"
 grep -q "url: \"${want_url}\"" Package.swift || fail "Package.swift url is not ${want_url}"
-spm="$(swift package compute-checksum "artifacts/${ZIP}")"
+spm="$(swift package compute-checksum "${DL}/${ZIP}")"
 grep -q "checksum: \"${spm}\"" Package.swift \
     || fail "Package.swift checksum does not match the published ${ZIP} (${spm})"
-python3 - "artifacts/pack.json" "${VERSION}" "${TARBALL}" "${ZIP}" "${spm}" <<'PY' || fail "pack.json does not describe the published assets"
+python3 - "${DL}" "${VERSION}" "${TARBALL}" "${ZIP}" "${spm}" <<'PY' || fail "pack.json does not describe the published assets"
 import hashlib, json, pathlib, sys
-manifest_path, version, tarball, zip_name, spm = sys.argv[1:6]
-m = json.loads(pathlib.Path(manifest_path).read_text())
-sha = lambda n: hashlib.sha256((pathlib.Path("artifacts") / n).read_bytes()).hexdigest()
+dl, version, tarball, zip_name, spm = sys.argv[1:6]
+m = json.loads((pathlib.Path(dl) / "pack.json").read_text())
+sha = lambda n: hashlib.sha256((pathlib.Path(dl) / n).read_bytes()).hexdigest()
 errors = []
 if m.get("version") != version: errors.append(f"version {m.get('version')} != {version}")
 a = m.get("artifacts") or {}
@@ -70,7 +75,7 @@ PY
 echo "consistency PASS: tag ${VERSION} · Package.swift url+checksum · pack.json · downloaded bytes all agree"
 
 # ---- 2 + 3 ----------------------------------------------------------------------
-./scripts/verify.sh
+SKIA_PACK_VERIFY_ARTIFACTS_DIR="${DL}" ./scripts/verify.sh
 ./scripts/verify_consumer.sh exact "${VERSION}"
 
 echo

@@ -30,7 +30,9 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."; echo "package" >> "$FAKE_GH/build.log"
 mkdir -p artifacts; n="$(grep -c '^package$' "$FAKE_GH/build.log")"
 echo "tarball bytes, packaging run $n" > artifacts/skia-pack-9.9.9-macos-arm64.tar.gz
 echo "zip bytes, packaging run $n" > artifacts/SkiaPack.xcframework.zip
-printf '{"artifacts":{"xcframework":{"spm_checksum":"%s"}}}\n' "$(swift package compute-checksum artifacts/SkiaPack.xcframework.zip)" > artifacts/pack.json
+sha() { shasum -a 256 "$1" | awk '{print $1}'; }
+printf '{"version":"9.9.9","artifacts":{"macos-arm64-tarball":{"file":"skia-pack-9.9.9-macos-arm64.tar.gz","sha256":"%s"},"xcframework":{"file":"SkiaPack.xcframework.zip","sha256":"%s","spm_checksum":"%s"}}}\n' \
+    "$(sha artifacts/skia-pack-9.9.9-macos-arm64.tar.gz)" "$(sha artifacts/SkiaPack.xcframework.zip)" "$(swift package compute-checksum artifacts/SkiaPack.xcframework.zip)" > artifacts/pack.json
 STUB
     chmod +x "${SB}/scripts/"*.sh
     git init -q --bare "${FAKE_ORIGIN}"
@@ -38,7 +40,7 @@ STUB
       && git remote add origin "${FAKE_ORIGIN}" && git push -q origin main ) >/dev/null 2>&1
 }
 run() { # run <args…> → sets RC, OUT
-    OUT="$( cd "${SB}" && PATH="${FAKE_GH}/bin:${PATH}" SKIA_PACK_RELEASE_CONFIRM=1 \
+    OUT="$( cd "${SB}" && PATH="${FAKE_GH}/bin:${PATH}" SKIA_PACK_RELEASE_CONFIRM=1 SKIA_PACK_RELEASE_RETRY_SLEEP=0 \
             GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
             ./scripts/release.sh "$@" 2>&1 )"; RC=$?
 }
@@ -102,7 +104,7 @@ expect_refused "C  stray local tag" "already exists locally"
 ( cd "${SB}" && git tag -d 9.9.9 >/dev/null && git push -q origin HEAD:refs/tags/9.9.9 ) 2>/dev/null
 expect_refused "C  tag exists on origin" "already exists on origin"
 ( cd "${SB}" && git push -q origin :refs/tags/9.9.9 ) 2>/dev/null
-echo draft > "${FAKE_GH}/state"
+echo draft > "${FAKE_GH}/state"; echo 7 > "${FAKE_GH}/id"; git --git-dir="${FAKE_ORIGIN}" rev-parse main > "${FAKE_GH}/target"
 expect_refused "C  a draft release already exists" "draft GitHub release 9.9.9 already exists"
 echo none > "${FAKE_GH}/state"
 expect_refused "C  --resume with nothing frozen" "no frozen artifacts" --resume
@@ -141,7 +143,84 @@ run
 chmod -R u+w "${SB}/artifacts/release-9.9.9"
 ( cd "${SB}/artifacts/release-9.9.9" && echo "zip bytes, some other build" > SkiaPack.xcframework.zip \
   && shasum -a 256 skia-pack-9.9.9-macos-arm64.tar.gz SkiaPack.xcframework.zip pack.json > SHA256SUMS )
-expect_refused "I  --resume from artifacts this version was not cut from" "not the ones this version was cut from" --resume
+expect_refused "I  --resume from artifacts this version was not cut from" "does not name the frozen zip" --resume
+
+interrupted() { # a release stopped at a DRAFT with no assets; sets RELEASE_COMMIT
+    new_sandbox "$1"; touch "${FAKE_GH}/fail_uploads"; run; rm "${FAKE_GH}/fail_uploads"
+    RELEASE_COMMIT="$(sed -n 's/^release_commit=//p' "${SB}/artifacts/release-9.9.9.state")"
+    [[ "$(cat "${FAKE_GH}/state")" == draft && -n "${RELEASE_COMMIT}" ]] || bad "$1 setup: not an interrupted draft"
+}
+no_tag() { ! git --git-dir="${FAKE_ORIGIN}" rev-parse -q --verify refs/tags/9.9.9 >/dev/null; }
+
+# ---- J. main moved on between the interruption and the resume -----------------------------------
+interrupted J
+( cd "${SB}" && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m "unrelated later work" && git push -q origin main ) 2>/dev/null
+expect_refused "J  --resume after main advanced: refused BEFORE publish" "is not the release commit" --resume
+[[ "$(cat "${FAKE_GH}/state")" == draft ]] && no_tag && ok "J  still a draft, no tag — nothing became public" || bad "J  state=$(cat "${FAKE_GH}/state")"
+( cd "${SB}" && git checkout -q --detach "${RELEASE_COMMIT}" )
+run --resume
+if [[ ${RC} -eq 0 ]] && published_matches_frozen && [[ "$(git --git-dir="${FAKE_ORIGIN}" rev-parse 9.9.9^{commit})" == "${RELEASE_COMMIT}" ]] \
+   && [[ "$(git --git-dir="${FAKE_ORIGIN}" rev-parse main)" != "${RELEASE_COMMIT}" ]]; then
+    ok "J  resumed from the recorded release commit: tag is on it, not on the newer main"
+else bad "J  resume on release commit: rc=${RC} $(echo "${OUT}" | tail -2)"; fi
+
+# ---- K. the draft targets some other commit ---------------------------------------------------------
+interrupted K
+git --git-dir="${FAKE_ORIGIN}" rev-parse main~1 > "${FAKE_GH}/target"        # an older commit, older Package.swift
+expect_refused "K  draft targets a different commit: refused before upload/publish" "not the recorded release commit" --resume
+[[ "$(cat "${FAKE_GH}/state")" == draft ]] && no_tag && ok "K  still a draft, no tag" || bad "K  state=$(cat "${FAKE_GH}/state")"
+
+# ---- N. the draft was deleted and recreated by someone else -----------------------------------------
+interrupted N
+echo 999 > "${FAKE_GH}/id"
+expect_refused "N  release id changed under us" "deleted and recreated" --resume
+
+# ---- L. the draft gets published elsewhere while this run is working --------------------------------
+interrupted L1
+echo "torn" > "${FAKE_GH}/assets/skia-pack-9.9.9-macos-arm64.tar.gz"                                # the draft holds one torn asset
+touch "${FAKE_GH}/publish_on_download"            # published by another session during our read-back of it
+expect_refused "L  published during a download: the torn asset is NOT deleted, nothing uploaded" "no longer a draft" --resume
+[[ -z "$(violations)" ]] && ok "L  no delete/upload reached the now-published release" || bad "L  $(violations)"
+interrupted L2
+echo 4 > "${FAKE_GH}/publish_after_views"         # published by another session just before our first upload
+expect_refused "L  published between two of our checks: nothing uploaded" "no longer a draft" --resume
+[[ -z "$(violations)" ]] && ok "L  no upload reached the now-published release" || bad "L  $(violations)"
+
+# ---- M. a failed query is not "no release" -------------------------------------------------------------
+interrupted M
+touch "${FAKE_GH}/fail_view"
+expect_refused "M  HTTP 503 on the release query: --check refuses" "could not determine the state" --check
+expect_refused "M  HTTP 503: a plain run refuses" "could not determine the state"
+expect_refused "M  HTTP 503: --resume refuses" "could not determine the state" --resume
+rm "${FAKE_GH}/fail_view"
+new_sandbox M2
+git init -q --bare "${ROOT}/elsewhere.git"; ( cd "${SB}" && git remote set-url origin "${ROOT}/missing.git" )
+run --check
+[[ ${RC} -ne 0 && "$(packs)" == 0 ]] && ok "M  unreachable origin: refuses (a failed fetch/ls-remote is not 'no tag')" || bad "M  unreachable origin: rc=${RC} ${OUT}"
+
+# ---- O. one release run at a time on this machine --------------------------------------------------------
+new_sandbox O
+mkdir -p "${SB}/artifacts/release-9.9.9.lock"; echo $$ > "${SB}/artifacts/release-9.9.9.lock/pid"
+expect_refused "O  a live lock from another run" "another release.sh"
+echo 999999 > "${SB}/artifacts/release-9.9.9.lock/pid"
+run
+[[ ${RC} -eq 0 ]] && published_matches_frozen && [[ ! -e "${SB}/artifacts/release-9.9.9.lock" ]] \
+    && ok "O  a stale lock (dead pid) is taken over; the lock is released at exit" || bad "O  stale lock: rc=${RC} $(echo "${OUT}" | tail -2)"
+
+# ---- P. verifying the published release must not disturb the frozen set ---------------------------------
+# (same sandbox: a finished release with artifacts/ and artifacts/release-9.9.9/ in place)
+cp "${PACK_ROOT}/scripts/verify_published.sh" "${SB}/scripts/"
+printf '#!/usr/bin/env bash\necho "verify dir=${SKIA_PACK_VERIFY_ARTIFACTS_DIR:-UNSET}" >> "$FAKE_GH/build.log"\n' > "${SB}/scripts/verify.sh"
+before="$(cd "${SB}/artifacts" && find . -type f | sort | xargs shasum -a 256)"
+OUT="$( cd "${SB}" && PATH="${FAKE_GH}/bin:${PATH}" ./scripts/verify_published.sh 9.9.9 2>&1 )"; RC=$?
+after="$(cd "${SB}/artifacts" && find . -type f | sort | xargs shasum -a 256)"
+if [[ ${RC} -eq 0 && "${before}" == "${after}" ]] && ( cd "${SB}/artifacts/release-9.9.9" && shasum -a 256 -c SHA256SUMS >/dev/null 2>&1 ) \
+   && grep -q "^verify dir=.*/build/verify-published/9.9.9$" "${FAKE_GH}/build.log"; then
+    ok "P  verify_published: artifacts/ and the frozen set untouched; the gate read the downloaded copy"
+else bad "P  verify_published: rc=${RC} changed=$([[ "${before}" == "${after}" ]] && echo no || echo YES) $(echo "${OUT}" | tail -2)"; fi
+echo "foreign" > "${FAKE_GH}/assets/SkiaPack.xcframework.zip"
+OUT="$( cd "${SB}" && PATH="${FAKE_GH}/bin:${PATH}" ./scripts/verify_published.sh 9.9.9 2>&1 )"; RC=$?
+[[ ${RC} -ne 0 && "${OUT}" == *"Package.swift checksum does not match"* ]] && ok "P  verify_published: a published zip that is not the committed checksum fails" || bad "P  tampered published zip: rc=${RC}"
 
 echo
 if [[ ${failures} -eq 0 ]]; then echo "[test_release] ALL CASES PASSED"; else echo "[test_release] ${failures} CASE(S) WRONG"; fi

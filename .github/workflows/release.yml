@@ -10,8 +10,9 @@
 # It runs when the release is PUBLISHED — i.e. only once all assets are in
 # place — and checks, on a clean runner, that the tag, Package.swift, pack.json
 # and the downloadable bytes agree, then runs the release gate and the SwiftPM
-# consumer check against those bytes. `workflow_dispatch` re-verifies any
-# released version on demand.
+# consumer check against those bytes. `workflow_dispatch` re-verifies a
+# released version on demand — 150.2.0 or later only: the job runs the scripts
+# AT the tag, and earlier tags do not contain them.
 name: release
 
 on:
@@ -20,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Released version (tag) to verify, e.g. 150.2.0"
+        description: "Released version (tag) to verify — 150.2.0 or later"
         required: true
 
 permissions:
@@ -70,6 +71,6 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
           path: |
-            artifacts/pack.json
+            build/verify-published/*/pack.json
             build/verify/*.log
             build/verify-consumer/*.log

@@ -36,8 +36,12 @@ PACK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="$(tr -d '[:space:]' < "${PACK_ROOT}/VERSION")"
 PLATFORM="macos-arm64"
 STAGE_NAME="skia-pack-${VERSION}-${PLATFORM}"
-TARBALL="${PACK_ROOT}/artifacts/${STAGE_NAME}.tar.gz"
-XCZIP="${PACK_ROOT}/artifacts/SkiaPack.xcframework.zip"
+# SKIA_PACK_VERIFY_ARTIFACTS_DIR points the gate at release bytes that live
+# elsewhere (scripts/verify_published.sh: the downloaded assets). verify.sh
+# only ever READS that directory.
+ARTIFACTS_DIR="${SKIA_PACK_VERIFY_ARTIFACTS_DIR:-${PACK_ROOT}/artifacts}"
+TARBALL="${ARTIFACTS_DIR}/${STAGE_NAME}.tar.gz"
+XCZIP="${ARTIFACTS_DIR}/SkiaPack.xcframework.zip"
 VERIFY="${PACK_ROOT}/build/verify"
 # shellcheck source=scripts/platform.sh
 source "${PACK_ROOT}/scripts/platform.sh"

@@ -105,11 +105,17 @@ An interrupted release is continued with `scripts/release.sh --resume`, which ne
 rebuilds or repackages: it re-checks the frozen bytes and picks up where it stopped.
 Assets are replaced only while the release is still a draft; a published release is
 never uploaded to, modified or deleted from — a botched one rolls forward as a PATCH
-bump. `scripts/release.sh --check` runs only the preflight;
+bump. The script records the release commit and the GitHub release id, requires a
+resume to stand on that commit, and re-reads the release immediately before every
+upload, delete and publish: it must still be that release, still a draft, still
+targeting that commit, and a failed query stops the run rather than counting as "no
+release". That narrows, but cannot close, a race with someone publishing from another
+machine — **enable GitHub's "immutable releases" setting on the repository** for a
+server-side guarantee. `scripts/release.sh --check` runs only the preflight;
 `tests/release/test_release.sh` exercises all of this against a fake `gh`.
 
 `.github/workflows/release.yml` is **read-only**: when a release is published (or on
-manual dispatch for any released version) it downloads the assets on a clean runner and
+manual dispatch for a released version from 150.2.0 on — earlier tags lack the scripts) it downloads the assets on a clean runner and
 runs `scripts/verify_published.sh` — tag, `Package.swift`, `pack.json` and bytes must
 agree, then the release gate and the SwiftPM consumer check run against those bytes. It
 never builds Skia and never uploads.
