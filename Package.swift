@@ -6,7 +6,8 @@
 // fails resolution loudly on a mismatch).
 //
 // Dev-mode escape hatch: when iterating against an unreleased pack, set
-//   SKIA_PACK_LOCAL_XCFRAMEWORK=/abs/path/to/SkiaPack.xcframework
+//   SKIA_PACK_LOCAL_XCFRAMEWORK=build/verify/xcframework/SkiaPack.xcframework
+// (SwiftPM requires the path to be RELATIVE to this package's root)
 // (honored when this manifest is (re-)evaluated — intended for use with
 // `swift package edit skia-pack --path …` from a consumer, or when skia-pack
 // itself is the root package). Caveat: SwiftPM caches manifests — after

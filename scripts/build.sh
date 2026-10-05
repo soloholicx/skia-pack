@@ -3,10 +3,13 @@
 #   1. pinned sources (scripts/fetch_sources.sh — pins.json → third_party/
 #      clones + Skia DEPS externals; no-op when already at the pins)
 #   2. standalone HarfBuzz static archive (scripts/build_harfbuzz.sh)
-#   3. gn gen with args from gn/macos.gn (system-HB wired at the pack's own
-#      HarfBuzz 14.2 headers) + ninja
+#   3. gn gen with args from the platform's gn file (system-HB wired at the
+#      pack's own HarfBuzz 14.2 headers) + ninja
 #
-# Output: build/skia/Release-macos-arm64/*.a  (the Skia archive set; with
+# usage: build.sh [platform]   platform = macos-arm64 (default) | ios-arm64 |
+#                              ios-arm64-simulator   (scripts/platform.sh)
+#
+# Output: build/skia/Release-<platform>/*.a  (the Skia archive set; with
 # system-HB Skia produces NO libharfbuzz.a of its own — package.sh copies the
 # HarfBuzz build's archive in under that name).
 #
@@ -16,15 +19,19 @@ set -euo pipefail
 PACK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SKIA_ROOT="${PACK_ROOT}/third_party/skia"
 HB_INCLUDE="${PACK_ROOT}/third_party/harfbuzz/src"
-OUT_DIR="${PACK_ROOT}/build/skia/Release-macos-arm64"
-GN_ARGS_FILE="${PACK_ROOT}/gn/macos.gn"
+PLATFORM="${1:-macos-arm64}"
+# shellcheck source=scripts/platform.sh
+source "${PACK_ROOT}/scripts/platform.sh"
+pack_platform_init "${PACK_ROOT}" "${PLATFORM}"
+OUT_DIR="${PACK_SKIA_OUT}"
+GN_ARGS_FILE="${PACK_ROOT}/${PACK_GN_FILE}"
 
 # 1. Pinned sources: third_party/ clones at pins.json SHAs + Skia DEPS
 #    externals. No-op when everything is already in place.
 "${PACK_ROOT}/scripts/fetch_sources.sh"
 
 # 2. HarfBuzz first — Skia compiles against its headers.
-"${PACK_ROOT}/scripts/build_harfbuzz.sh"
+"${PACK_ROOT}/scripts/build_harfbuzz.sh" "${PLATFORM}"
 
 cd "${SKIA_ROOT}"
 if [[ ! -x "${SKIA_ROOT}/bin/gn" ]]; then

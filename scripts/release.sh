@@ -10,8 +10,12 @@
 #   3. commit + tag <version>                  (tag == version string, matching
 #                                               the facade's download URL)
 #   4. create the GitHub release with the three assets
-#   5. post-verify: a scratch consumer resolves exact:<version> and builds a
-#      minimal hb_version_string() + SkSurface program against the product
+#   5. post-verify: tests/consumer resolves exact:<version> and builds against
+#      the published product for macOS (build + run), iOS device and iOS
+#      Simulator (scripts/verify_consumer.sh exact <version>)
+#
+# Needs a booted iOS simulator (SKIA_PACK_SIM_UDID=<udid>, else any booted
+# device): verify.sh runs the simulator slice's smoke test inside it.
 #
 # Consumers only ever resolve the tag AFTER step 4, so the asset referenced by
 # the manifest always exists by the time the manifest is visible. Artifacts
@@ -35,10 +39,16 @@ REPO_URL="https://github.com/soloholicx/skia-pack"
 
 cd "${PACK_ROOT}"
 
-# 1. Build, package, verify.
-./scripts/build.sh
+# 1. Build, package, verify. The macOS slice is rebuilt only when pins.json
+#    does not reuse a base release (see pins.json "macos_base").
+if ! python3 -c "import json,sys; sys.exit(0 if json.load(open('pins.json')).get('macos_base') else 1)"; then
+    ./scripts/build.sh macos-arm64
+fi
+./scripts/build.sh ios-arm64
+./scripts/build.sh ios-arm64-simulator
 ./scripts/package.sh
 ./scripts/verify.sh
+./scripts/verify_consumer.sh local
 
 # 2. Resolve URL + checksum into the SwiftPM facade.
 spm_checksum="$(python3 -c "import json; print(json.load(open('${ARTIFACTS}/pack.json'))['artifacts']['xcframework']['spm_checksum'])")"
@@ -81,7 +91,7 @@ if gh release view "${VERSION}" >/dev/null 2>&1; then
 else
     gh release create "${VERSION}" \
         --title "skia-pack ${VERSION}" \
-        --notes "Prebuilt Skia m150 (@$(git -C third_party/skia rev-parse --short HEAD)) + HarfBuzz 14.2.0 static artifacts for macOS arm64. See pack.json for the full manifest."
+        --notes "Prebuilt Skia m150 (@$(git -C third_party/skia rev-parse --short HEAD)) + HarfBuzz 14.2.0 static artifacts: macOS arm64 (tarball + xcframework slice), iOS arm64 and iOS Simulator arm64 (xcframework slices; simulator on Apple Silicon hosts only). See pack.json for the full manifest."
 fi
 
 REPO_PATH="${REPO_URL#https://github.com/}"
@@ -108,49 +118,8 @@ upload_asset "${TARBALL}"
 upload_asset "${XCZIP}"
 upload_asset "${ARTIFACTS}/pack.json"
 
-# 5. Post-verify: scratch consumer resolves the tag and builds against the
-#    released binary artifact.
-scratch="$(mktemp -d /tmp/skia-pack-postverify.XXXXXX)"
-trap 'rm -rf "${scratch}"' EXIT
-mkdir -p "${scratch}/Sources/postverify"
-cat > "${scratch}/Package.swift" <<EOF
-// swift-tools-version: 5.10
-import PackageDescription
-let package = Package(
-    name: "postverify",
-    dependencies: [
-        .package(url: "${REPO_URL}.git", exact: "${VERSION}")
-    ],
-    targets: [
-        .executableTarget(
-            name: "postverify",
-            dependencies: [.product(name: "SkiaPack", package: "skia-pack")],
-            linkerSettings: [
-                .linkedFramework("Metal"), .linkedFramework("MetalKit"),
-                .linkedFramework("Foundation"), .linkedFramework("CoreFoundation"),
-                .linkedFramework("CoreGraphics"), .linkedFramework("CoreText"),
-                .linkedFramework("CoreServices"), .linkedFramework("AppKit"),
-                .linkedFramework("QuartzCore"), .linkedFramework("IOSurface"),
-            ])
-    ],
-    cxxLanguageStandard: .cxx20
-)
-EOF
-cat > "${scratch}/Sources/postverify/main.cpp" <<'EOF'
-#include <cstdio>
-#include <cstring>
-#include <hb.h>
-#include "include/core/SkCanvas.h"
-#include "include/core/SkSurface.h"
-int main() {
-    if (std::strncmp(hb_version_string(), "14.2", 4) != 0) return 1;
-    auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(64, 64));
-    if (!surface) return 1;
-    surface->getCanvas()->clear(SK_ColorGREEN);
-    std::printf("post-verify OK: hb %s\n", hb_version_string());
-    return 0;
-}
-EOF
-(cd "${scratch}" && swift build && ./.build/debug/postverify)
+# 5. Post-verify: the consumer package resolves the tag and builds against the
+#    released binary artifact on every platform it ships.
+./scripts/verify_consumer.sh exact "${VERSION}"
 
 echo "[release] ${VERSION} released and post-verified"
