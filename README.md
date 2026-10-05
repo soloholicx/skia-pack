@@ -87,9 +87,32 @@ URL + commit for each input, and `scripts/fetch_sources.sh` (run automatically b
 `SKIA_PACK_REFERENCE_SKIA`/`SKIA_PACK_REFERENCE_HARFBUZZ` can point at local repos to
 speed up a fresh clone.
 
-Releases are cut with `scripts/release.sh` (tag == version string; assets uploaded via
-`gh release create`; post-verified by a scratch consumer). Artifacts are immutable —
-a botched release rolls forward as a PATCH bump, never a replacement.
+Releases are cut locally with `scripts/release.sh`. The bytes are packaged **once**,
+verified, frozen under `artifacts/release-<version>/`, and those exact bytes are what the
+committed checksum names and what is uploaded:
+
+1. preflight — clean tree, on `main`, level with `origin/main`; the version must have no
+   tag, no GitHub release (draft or published) and no frozen artifacts. Re-running an
+   existing version is refused.
+2. build → package → verify → consumer check → freeze.
+3. commit the frozen zip's checksum into `Package.swift`, push `main` (no tag yet).
+4. create a **draft** release, upload the frozen assets, read each one back and compare.
+5. publish — which is what creates the tag (== version string), so a tag never exists
+   without its assets.
+6. post-verify against the published product.
+
+An interrupted release is continued with `scripts/release.sh --resume`, which never
+rebuilds or repackages: it re-checks the frozen bytes and picks up where it stopped.
+Assets are replaced only while the release is still a draft; a published release is
+never uploaded to, modified or deleted from — a botched one rolls forward as a PATCH
+bump. `scripts/release.sh --check` runs only the preflight;
+`tests/release/test_release.sh` exercises all of this against a fake `gh`.
+
+`.github/workflows/release.yml` is **read-only**: when a release is published (or on
+manual dispatch for any released version) it downloads the assets on a clean runner and
+runs `scripts/verify_published.sh` — tag, `Package.swift`, `pack.json` and bytes must
+agree, then the release gate and the SwiftPM consumer check run against those bytes. It
+never builds Skia and never uploads.
 
 ## Design
 
