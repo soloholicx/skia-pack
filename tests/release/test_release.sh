@@ -200,12 +200,67 @@ run --check
 
 # ---- O. one release run at a time on this machine --------------------------------------------------------
 new_sandbox O
-mkdir -p "${SB}/artifacts/release-9.9.9.lock"; echo $$ > "${SB}/artifacts/release-9.9.9.lock/pid"
-expect_refused "O  a live lock from another run" "another release.sh"
-echo 999999 > "${SB}/artifacts/release-9.9.9.lock/pid"
+L="${SB}/artifacts/release-9.9.9.lock"
+mkdir -p "${L}"                                    # the window: another run did mkdir, has not written its pid yet
+expect_refused "O  lock with NO pid yet (the other run's init window): refused, not taken over" "release lock for 9.9.9 already exists"
+[[ -d "${L}" && ! -e "${L}/pid" ]] && ok "O  the other run's lock was left exactly as it was" || bad "O  lock was disturbed"
+echo $$ > "${L}/pid"
+expect_refused "O  lock held by a live pid" "release lock for 9.9.9 already exists"
+echo 999999 > "${L}/pid"
+expect_refused "O  lock naming a dead pid: still refused (no automatic takeover)" "release lock for 9.9.9 already exists"
+[[ "$(cat "${L}/pid")" == 999999 ]] && ok "O  a refused run does not remove a lock it does not own" || bad "O  foreign lock removed"
+expect_refused "O  --resume honours the lock too" "release lock for 9.9.9 already exists" --resume
+run --check
+[[ ${RC} -eq 0 ]] && ok "O  --check is read-only and does not need the lock" || bad "O  --check under lock: rc=${RC} ${OUT}"
+rm -rf "${L}"                                      # the human-confirmed cleanup
 run
-[[ ${RC} -eq 0 ]] && published_matches_frozen && [[ ! -e "${SB}/artifacts/release-9.9.9.lock" ]] \
-    && ok "O  a stale lock (dead pid) is taken over; the lock is released at exit" || bad "O  stale lock: rc=${RC} $(echo "${OUT}" | tail -2)"
+[[ ${RC} -eq 0 ]] && published_matches_frozen && [[ ! -e "${L}" ]] \
+    && ok "O  after manual cleanup the release runs, and releases its own lock at exit" || bad "O  after cleanup: rc=${RC} $(echo "${OUT}" | tail -2)"
+# a refused preflight must release the lock it took
+expect_refused "O  (setup) re-run of the published version" "already exists"
+[[ ! -e "${L}" ]] && ok "O  a run refused in preflight releases its own lock" || bad "O  lock leaked after a refusal"
+
+# ---- Q. a same-named tag appears AFTER the preflight ----------------------------------------------------
+interrupted Q
+echo "torn" > "${FAKE_GH}/assets/pack.json"        # forces a read-back download, during which the tag is planted
+git --git-dir="${FAKE_ORIGIN}" rev-parse main~1 > "${FAKE_GH}/plant_tag_on_download"
+e0="$(count '^gh release edit' "${FAKE_GH}/calls.log")"
+run --resume
+if [[ ${RC} -ne 0 && "${OUT}" == *"REFUSED"*"appeared on origin"*"NOT published"* && "$(cat "${FAKE_GH}/state")" == draft ]] \
+   && [[ "$(count '^gh release edit' "${FAKE_GH}/calls.log")" == "${e0}" ]]; then
+    ok "Q  tag planted after preflight (at an older commit): refused BEFORE publish, still a draft"
+else bad "Q  late tag: rc=${RC} state=$(cat "${FAKE_GH}/state") $(echo "${OUT}" | tail -2)"; fi
+interrupted Q2
+# the tag lookup itself failing right before publish must stop too: make ls-remote fail after preflight
+cat > "${FAKE_GH}/bin/git" <<'GITWRAP'
+#!/usr/bin/env bash
+real="$(PATH="${PATH#*:}" command -v git)"
+if [[ "$1" == "ls-remote" ]]; then
+    n=$(( $(cat "$FAKE_GH/lsremote_calls" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_GH/lsremote_calls"
+    (( n >= 2 )) && { echo "fatal: unable to access origin: Could not resolve host" >&2; exit 128; }
+fi
+exec "$real" "$@"
+GITWRAP
+chmod +x "${FAKE_GH}/bin/git"
+e0="$(count '^gh release edit' "${FAKE_GH}/calls.log")"
+run --resume
+if [[ ${RC} -ne 0 && "${OUT}" == *"could not list tags on origin"* && "$(cat "${FAKE_GH}/state")" == draft ]] \
+   && [[ "$(count '^gh release edit' "${FAKE_GH}/calls.log")" == "${e0}" ]]; then
+    ok "Q  tag lookup fails right before publish: refused, still a draft"
+else bad "Q  failed late lookup: rc=${RC} state=$(cat "${FAKE_GH}/state") $(echo "${OUT}" | tail -2)"; fi
+rm -f "${FAKE_GH}/bin/git"
+
+# ---- R. two real runs started at the same moment --------------------------------------------------------
+new_sandbox R
+race() { ( cd "${SB}" && PATH="${FAKE_GH}/bin:${PATH}" SKIA_PACK_RELEASE_CONFIRM=1 SKIA_PACK_RELEASE_RETRY_SLEEP=0 \
+           GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+           ./scripts/release.sh > "${ROOT}/race-$1.out" 2>&1; echo $? > "${ROOT}/race-$1.rc" ); }
+race 1 & race 2 & wait
+rcs="$(cat "${ROOT}/race-1.rc" "${ROOT}/race-2.rc" | sort | tr '\n' ' ')"
+locked="$(cat "${ROOT}/race-1.out" "${ROOT}/race-2.out" | grep -c 'release lock for 9.9.9 already exists' || true)"
+if [[ "${rcs}" == "0 1 " && "${locked}" == 1 && "$(packs)" == 1 ]] && published_matches_frozen && [[ -z "$(violations)" ]]; then
+    ok "R  two simultaneous runs: exactly one releases (packaged once), the other is refused by the lock"
+else bad "R  race: rcs='${rcs}' lock refusals=${locked} packs=$(packs)"; fi
 
 # ---- P. verifying the published release must not disturb the frozen set ---------------------------------
 # (same sandbox: a finished release with artifacts/ and artifacts/release-9.9.9/ in place)

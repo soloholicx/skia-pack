@@ -52,7 +52,7 @@
 # query is never read as "no release": anything but a definite answer stops.
 #
 # Limits, stated plainly. artifacts/release-<version>.lock keeps two runs on
-# THIS machine apart. Against another machine or a click in the web UI, the
+# THIS machine apart (an existing lock is always refused, never taken over). Against another machine or a click in the web UI, the
 # re-check narrows the window to one API call but cannot close it — only
 # GitHub's server-side "immutable releases" repository setting makes a
 # published release unmodifiable. Enable it for this repo.
@@ -138,6 +138,30 @@ verify_frozen() {
         || refuse "frozen artifacts do not match ${FROZEN}/SHA256SUMS — they were modified after the freeze; this version cannot be released from them"
 }
 
+# ------------------------------------------------------------------ lock ----
+# One release run per machine at a time, taken BEFORE the authoritative
+# preflight so two runs can never both pass it. An existing lock is refused
+# whatever it contains — including a lock whose pid file is still empty
+# (another run is between its mkdir and its write) or names a dead process.
+# Nothing is taken over automatically: a stale lock is removed by a human who
+# has confirmed no release is running. Only the run that created the lock
+# removes it.
+LOCK="${ARTIFACTS}/release-${VERSION}.lock"
+LOCK_OWNED=0
+scratch=""
+cleanup() {
+    [[ -n "${scratch}" ]] && rm -rf "${scratch}"
+    if [[ "${LOCK_OWNED}" == "1" && "$(cat "${LOCK}/pid" 2>/dev/null)" == "$$" ]]; then rm -rf "${LOCK}"; fi
+}
+trap cleanup EXIT
+if [[ "${CHECK_ONLY}" == "0" ]]; then
+    mkdir -p "${ARTIFACTS}"
+    mkdir "${LOCK}" 2>/dev/null \
+        || refuse "a release lock for ${VERSION} already exists (${LOCK}, pid '$(cat "${LOCK}/pid" 2>/dev/null || true)') — another release.sh is running or died; remove the lock by hand only after confirming none is running"
+    LOCK_OWNED=1
+    echo $$ > "${LOCK}/pid"
+fi
+
 # ------------------------------------------------------------ 0. preflight ----
 [[ -z "$(git status --porcelain)" ]] || refuse "working tree is not clean (commit or stash first)"
 branch="$(git rev-parse --abbrev-ref HEAD)"
@@ -204,20 +228,7 @@ fi
 echo "[release] preflight OK (${MODE}): version ${VERSION}, HEAD ${head_commit:0:7}, release state ${state}"
 if [[ "${CHECK_ONLY}" == "1" ]]; then exit 0; fi
 
-# One release run per machine at a time.
-mkdir -p "${ARTIFACTS}"
-LOCK="${ARTIFACTS}/release-${VERSION}.lock"
-if ! mkdir "${LOCK}" 2>/dev/null; then
-    other="$(cat "${LOCK}/pid" 2>/dev/null || true)"
-    if [[ -n "${other}" ]] && kill -0 "${other}" 2>/dev/null; then
-        refuse "another release.sh (pid ${other}) is running for ${VERSION}"
-    fi
-    echo "[release] taking over a stale lock (pid ${other:-unknown} is gone)" >&2
-    rm -rf "${LOCK}"; mkdir "${LOCK}"
-fi
-echo $$ > "${LOCK}/pid"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/skia-pack-release.XXXXXX")"
-trap 'rm -rf "${scratch}" "${LOCK}"' EXIT
 
 # ------------------------------------- 1. build, package (once), verify -------
 if [[ "${MODE}" == "new" ]]; then
@@ -372,6 +383,14 @@ echo "[release] all ${#ASSETS[@]} assets on the release match the frozen bytes"
 
 # --------------------------------------------------------------- 5. publish ----
 if [[ "${ENTRY_STATE}" != "published" ]]; then
+    # Publishing creates the tag at the draft's target ONLY if no such tag exists;
+    # an existing tag wins and target_commitish is ignored. So the tag must still
+    # be absent right now (the preflight answer may be stale), and a failed lookup
+    # is not "absent". What remains is the single API call between this check and
+    # the publish — not closable from here; the post-publish check below reports it.
+    late_tag="$(remote_tag_commit)"
+    [[ -z "${late_tag}" ]] \
+        || refuse "tag ${VERSION} appeared on origin (→ ${late_tag:0:7}) after the preflight — publishing would adopt it instead of tagging the release commit ${release_commit:0:7}; NOT published"
     require_draft "publishing"          # still ours, still a draft, still targeting the release commit
     gh release edit "${VERSION}" --draft=false
     echo "[release] published ${VERSION}"

@@ -109,7 +109,10 @@ bump. The script records the release commit and the GitHub release id, requires 
 resume to stand on that commit, and re-reads the release immediately before every
 upload, delete and publish: it must still be that release, still a draft, still
 targeting that commit, and a failed query stops the run rather than counting as "no
-release". That narrows, but cannot close, a race with someone publishing from another
+release". Right before publishing it also re-checks that no tag of that name has appeared on
+origin (an existing tag would win over the draft's target). A per-version lock keeps two
+runs on one machine apart; an existing lock is always refused, never taken over — remove
+a stale one by hand after confirming no release is running. All of that narrows, but cannot close, a race with someone publishing from another
 machine — **enable GitHub's "immutable releases" setting on the repository** for a
 server-side guarantee. `scripts/release.sh --check` runs only the preflight;
 `tests/release/test_release.sh` exercises all of this against a fake `gh`.

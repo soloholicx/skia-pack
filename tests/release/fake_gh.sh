@@ -8,7 +8,8 @@ S="${FAKE_GH:?}"; mkdir -p "$S/assets"; [[ -f "$S/state" ]] || echo none > "$S/s
 echo "gh $*" >> "$S/calls.log"
 case " $* " in *" --clobber "*) echo "VIOLATION --clobber: $*" >> "$S/violations.log" ;; esac
 state="$(cat "$S/state")"
-publish_now() { git --git-dir="${FAKE_ORIGIN:?}" tag "$(cat "$S/version")" "$(cat "$S/target")"; echo published > "$S/state"; }
+# As GitHub does: an EXISTING tag wins, the draft's target is ignored.
+publish_now() { git --git-dir="${FAKE_ORIGIN:?}" tag "$(cat "$S/version")" "$(cat "$S/target")" 2>/dev/null || true; echo published > "$S/state"; }
 [[ "${1:-}" == "api" ]] && exit 1
 [[ "${1:-}" == "release" ]] || { echo "fake gh: unsupported: $*" >&2; exit 2; }
 cmd="$2"; shift 3 || true
@@ -32,7 +33,10 @@ case "$cmd" in
     while [[ $# -gt 0 ]]; do case "$1" in --pattern) name="$2"; shift ;; --dir) dir="$2"; shift ;; esac; shift; done
     [[ -f "$S/assets/$name" ]] || exit 1
     cp "$S/assets/$name" "$dir/$name"
-    if [[ -f "$S/publish_on_download" ]]; then rm "$S/publish_on_download"; publish_now; fi ;;
+    if [[ -f "$S/publish_on_download" ]]; then rm "$S/publish_on_download"; publish_now; fi
+    if [[ -f "$S/plant_tag_on_download" ]]; then   # someone pushes a same-named tag at another commit
+        git --git-dir="${FAKE_ORIGIN:?}" tag "$(cat "$S/version")" "$(cat "$S/plant_tag_on_download")"; rm "$S/plant_tag_on_download"
+    fi ;;
   upload)
     file="$1"; name="$(basename "$file")"
     [[ "$state" == published ]] && echo "VIOLATION upload to published: $name" >> "$S/violations.log"
