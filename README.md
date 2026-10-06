@@ -123,6 +123,12 @@ runs `scripts/verify_published.sh` — tag, `Package.swift`, `pack.json` and byt
 agree, then the release gate and the SwiftPM consumer check run against those bytes. It
 never builds Skia and never uploads.
 
+`.github/workflows/runner-precheck.yml` (manual, or automatically when the file itself changes
+in a PR) proves the runner image still satisfies that job's conditions — pinned Xcode, pinned
+simulator runtime, a device of the pinned type that boots, a process spawned inside it — with
+nothing substituted and no retries. Run it before cutting a release; a green run describes the
+image at that moment only.
+
 ## Design
 
 The full architecture (versioning, HarfBuzz-unification mechanism and its validation,

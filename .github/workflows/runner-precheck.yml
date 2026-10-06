@@ -1,0 +1,107 @@
+# Runner environment PRECHECK for release verification — nothing else.
+#
+# release.yml (read-only verification of a published release) needs, on the
+# macos-26 image: the pinned Xcode, the pinned iOS Simulator runtime, a device
+# of the pinned type that actually boots, and the ability to spawn a process
+# in it. This workflow proves exactly that, with the SAME conditions, before a
+# release is cut. It builds nothing, downloads nothing, touches no release.
+#
+# It does not substitute versions and does not retry: a missing runtime, a
+# device that will not boot, or a wrong Xcode is a RED result that names the
+# layer. A green run says the image satisfied the conditions at that moment;
+# it does not promise the image never drifts — hence the recorded provenance.
+name: runner-precheck
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/runner-precheck.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  precheck:
+    runs-on: macos-26 # arm64
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      # PINNED — identical to release.yml.
+      XCODE_VERSION: "26.6"
+      SIM_RUNTIME: com.apple.CoreSimulator.SimRuntime.iOS-26-5
+      SIM_DEVICE_TYPE: com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro
+    steps:
+      - name: "Layer 0 — image + toolchain provenance"
+        run: |
+          set -euo pipefail
+          {
+            echo "run_id=${GITHUB_RUN_ID} attempt=${GITHUB_RUN_ATTEMPT} sha=${GITHUB_SHA}"
+            echo "runner_image=${ImageOS:-?} ${ImageVersion:-?}"
+            echo "macos=$(sw_vers -productVersion) $(uname -m)"
+            echo "xcode=$(xcodebuild -version | tr '\n' ' ')"
+            echo "developer_dir=${DEVELOPER_DIR}"
+            echo "swift=$(swift --version 2>&1 | head -1)"
+            echo "clang=$(clang --version | head -1)"
+            echo "gh=$(gh --version | head -1)"
+            echo "ios_sdk=$(xcrun --sdk iphoneos --show-sdk-version) iphonesimulator_sdk=$(xcrun --sdk iphonesimulator --show-sdk-version)"
+          } | tee PROVENANCE
+          [[ -d "$DEVELOPER_DIR" ]] || { echo "::error::TOOLCHAIN: $DEVELOPER_DIR is not on this image"; exit 1; }
+          xcodebuild -version | head -1 | grep -qx "Xcode ${XCODE_VERSION}" \
+            || { echo "::error::TOOLCHAIN: expected Xcode ${XCODE_VERSION}, got '$(xcodebuild -version | head -1)'"; exit 1; }
+          echo "layer0=pass" >> PROVENANCE
+
+      - name: "Layer 1 — pinned simulator runtime and device type are present"
+        run: |
+          set -euo pipefail
+          xcrun simctl list runtimes | tee runtimes.txt
+          grep -q "$SIM_RUNTIME" runtimes.txt \
+            || { echo "::error::ENVIRONMENT: pinned runtime $SIM_RUNTIME is not on this image (nothing is substituted)"; exit 1; }
+          xcrun simctl list devicetypes | grep -q "$SIM_DEVICE_TYPE" \
+            || { echo "::error::ENVIRONMENT: pinned device type $SIM_DEVICE_TYPE is not on this image"; exit 1; }
+          echo "runtime_line=$(grep "$SIM_RUNTIME" runtimes.txt | head -1 | sed 's/^ *//')" >> PROVENANCE
+          echo "layer1=pass" >> PROVENANCE
+
+      - name: "Layer 2 — create the pinned device, boot it, wait for boot to complete"
+        run: |
+          set -euo pipefail
+          udid="$(xcrun simctl create skia-pack-precheck "$SIM_DEVICE_TYPE" "$SIM_RUNTIME")"
+          echo "udid=$udid" | tee -a PROVENANCE
+          t0=$(date +%s)
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          echo "boot_seconds=$(( $(date +%s) - t0 ))" | tee -a PROVENANCE
+          xcrun simctl list devices | grep "$udid" | grep -q "(Booted)" \
+            || { echo "::error::ENVIRONMENT: device $udid is not in state Booted after bootstatus"; exit 1; }
+          echo "SKIA_PACK_SIM_UDID=$udid" >> "$GITHUB_ENV"
+          echo "layer2=pass" >> PROVENANCE
+
+      - name: "Layer 3 — a process can be spawned inside the booted simulator"
+        run: |
+          set -euo pipefail
+          # verify.sh runs the simulator smoke binary with exactly this mechanism.
+          out="$(xcrun simctl spawn "$SKIA_PACK_SIM_UDID" /usr/bin/uname -a)"
+          echo "spawn_uname=$out" | tee -a PROVENANCE
+          [[ -n "$out" ]] || { echo "::error::ENVIRONMENT: simctl spawn produced no output"; exit 1; }
+          echo "layer3=pass" >> PROVENANCE
+
+      - name: "Layer 4 — SwiftPM checksum tool (used by verify_published.sh)"
+        run: |
+          set -euo pipefail
+          printf 'precheck' > probe.bin
+          sum="$(swift package compute-checksum probe.bin)"
+          echo "compute_checksum=$sum" | tee -a PROVENANCE
+          [[ "$sum" == "$(shasum -a 256 probe.bin | cut -d' ' -f1)" ]] \
+            || { echo "::error::TOOLCHAIN: swift package compute-checksum disagrees with sha256"; exit 1; }
+          echo "layer4=pass" >> PROVENANCE
+
+      - name: Keep the provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-precheck-${{ github.run_id }}
+          retention-days: 90
+          if-no-files-found: warn
+          path: |
+            PROVENANCE
+            runtimes.txt
