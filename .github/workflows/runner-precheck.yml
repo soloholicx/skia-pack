@@ -47,8 +47,12 @@ jobs:
             echo "ios_sdk=$(xcrun --sdk iphoneos --show-sdk-version) iphonesimulator_sdk=$(xcrun --sdk iphonesimulator --show-sdk-version)"
           } | tee PROVENANCE
           [[ -d "$DEVELOPER_DIR" ]] || { echo "::error::TOOLCHAIN: $DEVELOPER_DIR is not on this image"; exit 1; }
-          xcodebuild -version | head -1 | grep -qx "Xcode ${XCODE_VERSION}" \
-            || { echo "::error::TOOLCHAIN: expected Xcode ${XCODE_VERSION}, got '$(xcodebuild -version | head -1)'"; exit 1; }
+          # Read the whole output first: `xcodebuild -version | head -1` SIGPIPEs xcodebuild
+          # (it aborts with an NSException on the closed pipe), which pipefail turns into a red.
+          xcode_version="$(xcodebuild -version)"
+          xcode_first="${xcode_version%%$'\n'*}"
+          [[ "$xcode_first" == "Xcode ${XCODE_VERSION}" ]] \
+            || { echo "::error::TOOLCHAIN: expected Xcode ${XCODE_VERSION}, got '$xcode_first'"; exit 1; }
           echo "layer0=pass" >> PROVENANCE
 
       - name: "Layer 1 — pinned simulator runtime and device type are present"
