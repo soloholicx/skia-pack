@@ -102,10 +102,11 @@ jobs:
       - name: "Layer 4 — SwiftPM checksum tool (used by verify_published.sh)"
         run: |
           set -euo pipefail
-          printf 'precheck' > probe.bin
-          sum="$(swift package compute-checksum probe.bin)"
+          # compute-checksum only accepts .zip / .tar / .tar.gz names (the release asset is a .zip).
+          printf 'precheck' > probe.bin && zip -q probe.zip probe.bin
+          sum="$(swift package compute-checksum probe.zip)"
           echo "compute_checksum=$sum" | tee -a PROVENANCE
-          [[ "$sum" == "$(shasum -a 256 probe.bin | cut -d' ' -f1)" ]] \
+          [[ "$sum" == "$(shasum -a 256 probe.zip | cut -d' ' -f1)" ]] \
             || { echo "::error::TOOLCHAIN: swift package compute-checksum disagrees with sha256"; exit 1; }
           echo "layer4=pass" >> PROVENANCE
 
