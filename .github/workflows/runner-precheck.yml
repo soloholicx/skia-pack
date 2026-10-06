@@ -76,13 +76,23 @@ jobs:
           echo "SKIA_PACK_SIM_UDID=$udid" >> "$GITHUB_ENV"
           echo "layer2=pass" >> PROVENANCE
 
-      - name: "Layer 3 — a process can be spawned inside the booted simulator"
+      - name: "Layer 3 — a simulator-built binary runs inside the booted simulator"
         run: |
           set -euo pipefail
-          # verify.sh runs the simulator smoke binary with exactly this mechanism.
-          out="$(xcrun simctl spawn "$SKIA_PACK_SIM_UDID" /usr/bin/uname -a)"
-          echo "spawn_uname=$out" | tee -a PROVENANCE
-          [[ -n "$out" ]] || { echo "::error::ENVIRONMENT: simctl spawn produced no output"; exit 1; }
+          # verify.sh links its smoke test for arm64-apple-ios17.0-simulator and runs it
+          # with `simctl spawn`. Same mechanism here, on a minimal program: a macOS
+          # binary cannot be spawned in the simulator (no dyld cache / libSystem), so
+          # the probe MUST be built against the iphonesimulator SDK.
+          cat > hello.c <<'C'
+          #include <stdio.h>
+          #include <sys/utsname.h>
+          int main(void) { struct utsname u; uname(&u); printf("spawned-in-simulator %s %s\n", u.sysname, u.machine); return 0; }
+          C
+          xcrun --sdk iphonesimulator clang -target arm64-apple-ios17.0-simulator hello.c -o hello-sim
+          vtool -show-build hello-sim | grep -E "platform|minos" | tr -s ' ' | tr '\n' ' ' | tee -a PROVENANCE; echo >> PROVENANCE
+          out="$(xcrun simctl spawn "$SKIA_PACK_SIM_UDID" "$PWD/hello-sim")"
+          echo "spawn=$out" | tee -a PROVENANCE
+          [[ "$out" == spawned-in-simulator* ]] || { echo "::error::ENVIRONMENT: the simulator-built probe did not run in the simulator (got '$out')"; exit 1; }
           echo "layer3=pass" >> PROVENANCE
 
       - name: "Layer 4 — SwiftPM checksum tool (used by verify_published.sh)"
