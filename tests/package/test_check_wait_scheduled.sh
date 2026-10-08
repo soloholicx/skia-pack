@@ -8,7 +8,9 @@
 set -uo pipefail
 
 PACK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CHECK="${PACK_ROOT}/scripts/check_wait_scheduled.sh"
+# CHECK_WAIT_SCHEDULED overrides the probe under test (used to show this test
+# rejects an older, fail-open version of it).
+CHECK="${CHECK_WAIT_SCHEDULED:-${PACK_ROOT}/scripts/check_wait_scheduled.sh}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/test_check_wait_scheduled.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT
 failures=0
@@ -71,6 +73,57 @@ expect "without the call, mode on is rejected"  1 "${OFF}" on
 expect "no positive controls: probe error, not off" 3 "${EMPTY}" off
 expect "two such members: probe error"          3 "${DUP}" on
 expect "not an archive: probe error"            3 /etc/hosts on
+
+# Tool-failure negative controls. A shim directory placed first on PATH makes
+# one tool exit 2 — after producing its normal output ("after-output") or with
+# no output ("no-output") — either on every call or only on calls whose
+# arguments contain <match> (so a single search or subcommand fails while the
+# rest of the probe works). Every case must be a probe error (rc 3), in BOTH
+# modes and on BOTH archives: a tool error must never pass 'off', and must
+# never stand in for the expected rejection of 'on'.
+make_shim() { # make_shim <dir> <tool> <after-output|no-output> [match] [real-path]
+    local dir="$1" tool="$2" how="$3" match="${4:-}" real="${5:-$(command -v "$2")}"
+    mkdir -p "${dir}"
+    {
+        echo '#!/bin/bash'
+        printf 'case "$*" in *%q*) ;; *) exec "%s" "$@" ;; esac\n' "${match}" "${real}"
+        [[ "${how}" == after-output ]] && printf '"%s" "$@"\n' "${real}"
+        echo 'exit 2'
+    } > "${dir}/${tool}"
+    chmod +x "${dir}/${tool}"
+}
+expect_fault() { # expect_fault <label> <shim-dir>
+    local lib mode out rc
+    for lib in "${ON}" "${OFF}"; do
+        for mode in on off; do
+            out="$(PATH="$2:${PATH}" "${CHECK}" "${lib}" "${mode}" 2>&1)"; rc=$?
+            if [[ "${rc}" == 3 ]] && grep -qF "PROBE ERROR" <<< "${out}"; then
+                echo "ok   fault: $1 — $(basename "$(dirname "$(dirname "${lib}")")") lib, mode ${mode} (rc=3)"
+            else
+                echo "FAIL fault: $1 — ${lib} mode ${mode}: want rc=3 PROBE ERROR, got rc=${rc}: ${out}"
+                failures=$((failures + 1))
+            fi
+        done
+    done
+}
+REAL_OBJDUMP="$(xcrun --find llvm-objdump)"
+for how in after-output no-output; do
+    for spec in "grep:" "grep:waitUntilScheduled" "grep:commit" "ar:" "ar:-t" "ar:-x" "nm:"; do
+        tool="${spec%%:*}"; match="${spec#*:}"; d="${WORK}/shim-${tool}-${how}-${match:-all}"
+        make_shim "${d}" "${tool}" "${how}" "${match}"
+        if [[ -n "${match}" ]]; then scope="only calls with '${match}'"; else scope="every call"; fi
+        expect_fault "${tool} exits 2 (${how}, ${scope})" "${d}"
+    done
+done
+# llvm-objdump is located through xcrun: shim xcrun to hand back a failing objdump.
+for how in after-output no-output; do
+    make_shim "${WORK}/fake-objdump-${how}" llvm-objdump "${how}" "" "${REAL_OBJDUMP}"
+    mkdir -p "${WORK}/shim-xcrun-${how}"
+    printf '#!/bin/bash\n[[ "$*" == "--find llvm-objdump" ]] && { echo "%s/llvm-objdump"; exit 0; }\nexec /usr/bin/xcrun "$@"\n' \
+        "${WORK}/fake-objdump-${how}" > "${WORK}/shim-xcrun-${how}/xcrun"
+    chmod +x "${WORK}/shim-xcrun-${how}/xcrun"
+    expect_fault "llvm-objdump exits 2 (${how})" "${WORK}/shim-xcrun-${how}"
+done
 
 echo
 if (( failures )); then echo "[test_check_wait_scheduled] ${failures} FAILED"; exit 1; fi

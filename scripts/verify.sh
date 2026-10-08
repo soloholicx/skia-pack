@@ -296,11 +296,21 @@ done
 echo "gn(i) PASS: gn/ios.gn and gn/ios-sim.gn share every non-platform arg with gn/macos.gn"
 
 # ---- (k) SK_METAL_WAIT_UNTIL_SCHEDULED in the iOS slices, not in macOS ----------
+# Three-state searches: found (0) / absent (1) / error (anything else — fails).
 for gn in ios ios-sim; do
-    grep -qx 'extra_cflags=\[.*"-DSK_METAL_WAIT_UNTIL_SCHEDULED".*\]' "${PACK_ROOT}/gn/${gn}.gn" \
-        || fail "wait(k): gn/${gn}.gn does not define SK_METAL_WAIT_UNTIL_SCHEDULED"
+    gn_rc=0; grep -qx 'extra_cflags=\[.*"-DSK_METAL_WAIT_UNTIL_SCHEDULED".*\]' "${PACK_ROOT}/gn/${gn}.gn" || gn_rc=$?
+    case "${gn_rc}" in
+        0) ;;
+        1) fail "wait(k): gn/${gn}.gn does not define SK_METAL_WAIT_UNTIL_SCHEDULED" ;;
+        *) fail "wait(k): searching gn/${gn}.gn failed (grep rc=${gn_rc})" ;;
+    esac
 done
-grep -q 'SK_METAL_WAIT_UNTIL_SCHEDULED' "${PACK_ROOT}/gn/macos.gn" && fail "wait(k): gn/macos.gn defines SK_METAL_WAIT_UNTIL_SCHEDULED"
+gn_rc=0; grep -q 'SK_METAL_WAIT_UNTIL_SCHEDULED' "${PACK_ROOT}/gn/macos.gn" || gn_rc=$?
+case "${gn_rc}" in
+    1) ;;
+    0) fail "wait(k): gn/macos.gn defines SK_METAL_WAIT_UNTIL_SCHEDULED" ;;
+    *) fail "wait(k): searching gn/macos.gn failed (grep rc=${gn_rc})" ;;
+esac
 for platform in "${PACK_IOS_PLATFORMS[@]}"; do
     "${PACK_ROOT}/scripts/check_wait_scheduled.sh" "${XCROOT}/${platform}/libSkiaPack.a" on \
         || fail "wait(k) ${platform}: GrMtlCommandBuffer::commit does not call waitUntilScheduled"
@@ -309,8 +319,9 @@ done
     || fail "wait(k) macos-arm64: the macOS slice is expected without the macro"
 reverse_rc=0
 "${PACK_ROOT}/scripts/check_wait_scheduled.sh" "${XCROOT}/macos-arm64/libSkiaPack.a" on > "${VERIFY}/wait-reverse.log" 2>&1 || reverse_rc=$?
+# Only rc 1 is a rejection; rc 3 (probe error) must not stand in for one.
 [[ "${reverse_rc}" == "1" ]] \
-    || { cat "${VERIFY}/wait-reverse.log" >&2; fail "wait(k) reverse check: probing the macOS slice for 'on' returned rc=${reverse_rc}, want 1 (rejected)"; }
+    || { cat "${VERIFY}/wait-reverse.log" >&2; fail "wait(k) reverse check: probing the macOS slice for 'on' returned rc=${reverse_rc}, want 1 (rejected; 3 = probe error)"; }
 echo "wait(k) PASS: both iOS slices call waitUntilScheduled from GrMtlCommandBuffer::commit; macOS does not; reverse check rejected 'on' for macOS"
 
 echo
