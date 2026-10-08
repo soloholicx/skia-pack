@@ -23,6 +23,9 @@
 #       packaging stage; the smoke test LINKS as a consumer would, and the
 #       simulator build RUNS inside a booted simulator
 #   (i) gn/ios*.gn share every non-platform arg with gn/macos.gn verbatim
+#   (j) zip hygiene (scripts/check_zip.sh): the xcframework zip has no
+#       AppleDouble ._* / __MACOSX entries, and the tree plain unzip produces
+#       (what SwiftPM extracts) equals the tree ditto produces
 #
 # The simulator run needs a booted simulator: SKIA_PACK_SIM_UDID=<udid>, or
 # any booted device. With none, verify FAILS — set
@@ -54,6 +57,11 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 rm -rf "${VERIFY}"
 mkdir -p "${VERIFY}"
+
+# ---- (j) zip hygiene, before anything is extracted from it --------------------
+"${PACK_ROOT}/scripts/check_zip.sh" "${XCZIP}" || fail "zip(j): ${XCZIP} failed the zip hygiene check"
+echo "zip(j) PASS: no AppleDouble/__MACOSX entries; plain unzip tree == ditto tree"
+
 tar -xzf "${TARBALL}" -C "${VERIFY}"
 ditto -x -k "${XCZIP}" "${VERIFY}/xcframework"
 
