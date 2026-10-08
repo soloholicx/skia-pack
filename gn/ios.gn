@@ -11,7 +11,16 @@
 #     honours it: every object carries LC_BUILD_VERSION minos 17.0, which
 #     scripts/verify.sh asserts on the release bytes.
 #   * skia_ios_use_signing=false     — static archives only; nothing to sign.
-#   * extra_cflags carries only the HarfBuzz include (no -mmacosx-version-min).
+#   * extra_cflags carries the HarfBuzz include (no -mmacosx-version-min) and
+#     -DSK_METAL_WAIT_UNTIL_SCHEDULED. With it, GrMtlCommandBuffer::commit
+#     (src/gpu/ganesh/mtl/GrMtlCommandBuffer.mm, an iOS-only code path) calls
+#     waitUntilScheduled after a commit that does not wait for completion;
+#     synchronous commits still wait for completion, as before. Scope: only
+#     Skia's own Ganesh Metal command buffers whose commit succeeds (a buffer
+#     that ends in MTLCommandBufferStatusError is not counted as scheduled);
+#     command buffers the embedding app commits itself are not covered. This
+#     is not, on its own, a background-safety guarantee: the app must still
+#     stop submitting GPU work once it is inactive.
 # Known quirk: for target_cpu="arm64" Skia's gn/skia/BUILD.gn passes BOTH
 # -arch arm64 and -arch arm64e, so the archives come out fat (arm64 + arm64e).
 # scripts/package.sh thins every archive to arm64 before merging; arm64e is
@@ -45,4 +54,4 @@ target_os="ios"
 ios_use_simulator=false
 ios_min_target="17.0"
 skia_ios_use_signing=false
-extra_cflags=["-I@HB_INCLUDE@"]
+extra_cflags=["-I@HB_INCLUDE@","-DSK_METAL_WAIT_UNTIL_SCHEDULED"]
