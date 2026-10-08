@@ -12,8 +12,15 @@
 #      metadata): same files, directories and symlinks, same bytes, same link
 #      targets
 #   3. with <reference-dir> (the directory that was zipped, e.g. the staged
-#      SkiaPack.xcframework): the unzip tree has exactly the reference's
-#      files, directories and symlinks, with the same bytes and link targets
+#      SkiaPack.xcframework): the WHOLE unzip tree is exactly the reference —
+#      same files, directories and symlinks, same bytes and link targets.
+#      Two layouts are allowed and nothing else:
+#        wrapped    the zip root holds exactly one entry, a directory named
+#                   like the reference (ditto --keepParent), whose tree is
+#                   the reference's
+#        unwrapped  the zip root IS the reference's tree
+#      Any entry outside that — a sibling file or directory next to the
+#      wrapper, at any depth — is a difference.
 #
 # Fail closed: every tool's exit status is checked; a hash is validated before
 # it is written; searches are three-state (found / absent / error). A tool
@@ -110,13 +117,23 @@ entries="$(lines "${WORK}/unzip.manifest")" || die "count failed"
 links_state="$(search "${WORK}/links" '^l ' -- "${WORK}/unzip.manifest")" || die "grep failed counting symlinks"
 links=0; [[ "${links_state}" == found ]] && { links="$(lines "${WORK}/links")" || die "count failed"; }
 if [[ -n "${REF}" ]]; then
-    # The zip may wrap the reference in its parent directory name (--keepParent).
-    top="${WORK}/unzip/$(basename "${REF}")"
-    [[ -d "${top}" ]] || top="${WORK}/unzip"
+    name="$(basename "${REF}")"
+    [[ -n "${name}" && "${name}" != *[\#\&\\]* ]] || die "unsupported reference name: '${name}'"
     tree_manifest "${REF}" "${WORK}/ref.manifest"
-    tree_manifest "${top}" "${WORK}/top.manifest"
-    compare "${WORK}/ref.manifest" "${WORK}/top.manifest" "the unzipped tree differs from the reference ${REF}"
-    echo "check_zip PASS: ${ZIP} — no AppleDouble/__MACOSX entries; unzip tree == ditto tree == reference (${entries} entries, ${links} symlinks)"
+    # Layout: wrapped only if the root holds exactly one entry, a directory named ${name}.
+    find "${WORK}/unzip" -mindepth 1 -maxdepth 1 > "${WORK}/root.entries" 2> "${WORK}/root.err" || die "find failed listing the zip root"
+    root_n="$(lines "${WORK}/root.entries")" || die "count failed"
+    if [[ "${root_n}" == 1 && -d "${WORK}/unzip/${name}" && ! -L "${WORK}/unzip/${name}" ]]; then
+        layout="wrapped in ${name}/"
+        { printf 'd %s\n' "${name}" && sed -E "s#^([fdl]) #\\1 ${name}/#" "${WORK}/ref.manifest"; } > "${WORK}/expected.manifest" \
+            || die "could not build the expected manifest"
+    else
+        layout="unwrapped"
+        cp "${WORK}/ref.manifest" "${WORK}/expected.manifest" || die "could not build the expected manifest"
+    fi
+    # The whole unzip tree — not a subtree — must equal the expected one.
+    compare "${WORK}/expected.manifest" "${WORK}/unzip.manifest" "the unzipped tree (${layout}, ${root_n} root entries) differs from the reference ${REF}"
+    echo "check_zip PASS: ${ZIP} — no AppleDouble/__MACOSX entries; unzip tree == ditto tree == reference, ${layout} (${entries} entries, ${links} symlinks)"
 else
     echo "check_zip PASS: ${ZIP} — no AppleDouble/__MACOSX entries; unzip tree == ditto tree (${entries} entries, ${links} symlinks)"
 fi

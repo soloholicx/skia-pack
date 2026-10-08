@@ -74,6 +74,27 @@ expect "file bytes differ from the reference: rejected" 1 "differs from the refe
 
 expect "missing zip is a usage error, not a pass" 2 "no such zip" -- "${WORK}/nope.zip"
 
+# Layout: the WHOLE unzipped tree must be the reference — wrapped in one
+# directory named like it, or unwrapped — with nothing beside it.
+ditto -c -k --norsrc --noextattr "${REF}" "${WORK}/unwrapped.zip"
+expect "unwrapped zip (root is the reference's tree) passes" 0 "unwrapped" -- "${WORK}/unwrapped.zip" "${REF}"
+expect "wrapped zip (--keepParent) passes, reported as wrapped" 0 "wrapped in Fixture.xcframework/" -- "${WORK}/clean.zip" "${REF}"
+stage_zip() { # stage_zip <name> <setup-command…>: zip the CONTENTS of a fresh staging dir
+    local s="${WORK}/stage-$1"; mkdir -p "${s}"; shift
+    (cd "${s}" && "$@") || { echo "ENVIRONMENT: staging failed"; exit 2; }
+    ditto -c -k --norsrc --noextattr "${s}" "${WORK}/$(basename "${s}").zip"
+}
+stage_zip extra-file sh -c "cp -R '${REF}' . && printf 'x\n' > unexpected.txt"
+expect "extra top-level FILE beside the wrapper: rejected" 1 "differs from the reference" -- "${WORK}/stage-extra-file.zip" "${REF}"
+stage_zip extra-dir sh -c "cp -R '${REF}' . && mkdir extra && printf 'x\n' > extra/f.txt"
+expect "extra top-level DIRECTORY beside the wrapper: rejected" 1 "differs from the reference" -- "${WORK}/stage-extra-dir.zip" "${REF}"
+stage_zip extra-empty-dir sh -c "cp -R '${REF}' . && mkdir extra"
+expect "extra empty top-level directory beside the wrapper: rejected" 1 "differs from the reference" -- "${WORK}/stage-extra-empty-dir.zip" "${REF}"
+stage_zip unwrapped-extra sh -c "cp -R '${REF}'/. . && printf 'x\n' > unexpected.txt"
+expect "unwrapped tree plus an extra top-level file: rejected" 1 "differs from the reference" -- "${WORK}/stage-unwrapped-extra.zip" "${REF}"
+stage_zip double-wrap sh -c "mkdir outer && cp -R '${REF}' outer/"
+expect "reference nested one level too deep: rejected" 1 "differs from the reference" -- "${WORK}/stage-double-wrap.zip" "${REF}"
+
 # Tool-failure negative controls. A shim directory first on PATH makes one tool
 # exit 2 — after its normal output or with none, on every call or only on
 # calls whose arguments contain <match>. Each fault is applied to the clean zip
