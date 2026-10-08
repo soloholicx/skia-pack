@@ -117,7 +117,9 @@ entries="$(lines "${WORK}/unzip.manifest")" || die "count failed"
 links_state="$(search "${WORK}/links" '^l ' -- "${WORK}/unzip.manifest")" || die "grep failed counting symlinks"
 links=0; [[ "${links_state}" == found ]] && { links="$(lines "${WORK}/links")" || die "count failed"; }
 if [[ -n "${REF}" ]]; then
-    name="$(basename "${REF}")"
+    name="$(basename -- "${REF}")" || die "basename failed on ${REF}"
+    ref_trimmed="${REF%/}"
+    [[ "${name}" == "${ref_trimmed##*/}" ]] || die "basename returned '${name}' for ${REF}"
     [[ -n "${name}" && "${name}" != *[\#\&\\]* ]] || die "unsupported reference name: '${name}'"
     tree_manifest "${REF}" "${WORK}/ref.manifest"
     # Layout: wrapped only if the root holds exactly one entry, a directory named ${name}.

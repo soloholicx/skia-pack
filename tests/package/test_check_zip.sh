@@ -132,7 +132,7 @@ expect_fault() { # expect_fault <label> <shim-dir> <listing-phase: yes|no>
 }
 expect "control for the fault cases: clean zip vs different bytes is a FAIL" 1 "differs from the reference" -- "${WORK}/clean.zip" "${WORK}/bytes/Fixture.xcframework"
 for how in after-output no-output; do
-    for spec in "shasum::no" "readlink::no" "zipinfo::yes" "unzip::no" "ditto::no" "find::no" "sort::no" "diff::no" "wc::yes" \
+    for spec in "basename::no" "shasum::no" "readlink::no" "zipinfo::yes" "unzip::no" "ditto::no" "find::no" "sort::no" "diff::no" "wc::yes" \
                 'grep:\._:yes' "grep:__MACOSX:yes" "grep:^l :no"; do
         tool="${spec%%:*}"; rest="${spec#*:}"; match="${rest%:*}"; listing="${rest##*:}"; d="${WORK}/shim-${tool}-${how}-$(printf '%s' "${match:-all}" | tr -c 'A-Za-z0-9' '_')"
         make_shim "${d}" "${tool}" "${how}" "${match}"
