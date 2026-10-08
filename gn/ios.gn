@@ -20,7 +20,8 @@
 #     that ends in MTLCommandBufferStatusError is not counted as scheduled);
 #     command buffers the embedding app commits itself are not covered. This
 #     is not, on its own, a background-safety guarantee: the app must still
-#     stop submitting GPU work once it is inactive.
+#     stop submitting GPU work once it is inactive. scripts/verify.sh (k)
+#     checks the compiled objects: the call is in both iOS slices, not macOS.
 # Known quirk: for target_cpu="arm64" Skia's gn/skia/BUILD.gn passes BOTH
 # -arch arm64 and -arch arm64e, so the archives come out fat (arm64 + arm64e).
 # scripts/package.sh thins every archive to arm64 before merging; arm64e is

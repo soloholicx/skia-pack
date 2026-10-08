@@ -26,6 +26,11 @@
 #   (j) zip hygiene (scripts/check_zip.sh): the xcframework zip has no
 #       AppleDouble ._* / __MACOSX entries, and the tree plain unzip produces
 #       (what SwiftPM extracts) equals the tree ditto produces
+#   (k) SK_METAL_WAIT_UNTIL_SCHEDULED (scripts/check_wait_scheduled.sh, read
+#       from the objects): both iOS slices' GrMtlCommandBuffer::commit calls
+#       waitUntilScheduled, the macOS slice's does not; reverse check — the
+#       probe must REJECT 'on' for the macOS slice, so it is seen detecting
+#       absence on the very bytes under test
 #
 # The simulator run needs a booted simulator: SKIA_PACK_SIM_UDID=<udid>, or
 # any booted device. With none, verify FAILS — set
@@ -289,6 +294,24 @@ for gn in ios ios-sim; do
     [[ "${shared}" == "$(gn_shared "${PACK_ROOT}/gn/macos.gn")" ]] || fail "gn(i): gn/${gn}.gn shared args drifted from gn/macos.gn"
 done
 echo "gn(i) PASS: gn/ios.gn and gn/ios-sim.gn share every non-platform arg with gn/macos.gn"
+
+# ---- (k) SK_METAL_WAIT_UNTIL_SCHEDULED in the iOS slices, not in macOS ----------
+for gn in ios ios-sim; do
+    grep -qx 'extra_cflags=\[.*"-DSK_METAL_WAIT_UNTIL_SCHEDULED".*\]' "${PACK_ROOT}/gn/${gn}.gn" \
+        || fail "wait(k): gn/${gn}.gn does not define SK_METAL_WAIT_UNTIL_SCHEDULED"
+done
+grep -q 'SK_METAL_WAIT_UNTIL_SCHEDULED' "${PACK_ROOT}/gn/macos.gn" && fail "wait(k): gn/macos.gn defines SK_METAL_WAIT_UNTIL_SCHEDULED"
+for platform in "${PACK_IOS_PLATFORMS[@]}"; do
+    "${PACK_ROOT}/scripts/check_wait_scheduled.sh" "${XCROOT}/${platform}/libSkiaPack.a" on \
+        || fail "wait(k) ${platform}: GrMtlCommandBuffer::commit does not call waitUntilScheduled"
+done
+"${PACK_ROOT}/scripts/check_wait_scheduled.sh" "${XCROOT}/macos-arm64/libSkiaPack.a" off \
+    || fail "wait(k) macos-arm64: the macOS slice is expected without the macro"
+reverse_rc=0
+"${PACK_ROOT}/scripts/check_wait_scheduled.sh" "${XCROOT}/macos-arm64/libSkiaPack.a" on > "${VERIFY}/wait-reverse.log" 2>&1 || reverse_rc=$?
+[[ "${reverse_rc}" == "1" ]] \
+    || { cat "${VERIFY}/wait-reverse.log" >&2; fail "wait(k) reverse check: probing the macOS slice for 'on' returned rc=${reverse_rc}, want 1 (rejected)"; }
+echo "wait(k) PASS: both iOS slices call waitUntilScheduled from GrMtlCommandBuffer::commit; macOS does not; reverse check rejected 'on' for macOS"
 
 echo
 if (( ${#SKIPPED[@]} > 0 )); then
