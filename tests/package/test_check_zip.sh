@@ -10,7 +10,9 @@
 set -uo pipefail
 
 PACK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CHECK="${PACK_ROOT}/scripts/check_zip.sh"
+# CHECK_ZIP overrides the gate under test (used to show this test rejects an
+# older, fail-open version of it).
+CHECK="${CHECK_ZIP:-${PACK_ROOT}/scripts/check_zip.sh}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/test_check_zip.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT
 failures=0
@@ -71,6 +73,52 @@ printf 'LIB\n' > "${WORK}/bytes/Fixture.xcframework/ios-arm64/libFixture.a"
 expect "file bytes differ from the reference: rejected" 1 "differs from the reference" -- "${WORK}/clean.zip" "${WORK}/bytes/Fixture.xcframework"
 
 expect "missing zip is a usage error, not a pass" 2 "no such zip" -- "${WORK}/nope.zip"
+
+# Tool-failure negative controls. A shim directory first on PATH makes one tool
+# exit 2 — after its normal output or with none, on every call or only on
+# calls whose arguments contain <match>. Each fault is applied to the clean zip
+# against its reference (a fault must not PASS) and against a reference with
+# different bytes (a fault must not turn the real difference into "matches");
+# faults in the tools the listing check uses (zipinfo, the ._ / __MACOSX
+# searches, wc) are also applied to the AppleDouble zip (a fault must not hide
+# the pollution — the other tools never run for it, the listing already fails
+# it). Every case must exit 2 with "check_zip ERROR".
+make_shim() { # make_shim <dir> <tool> <after-output|no-output> [match]
+    local dir="$1" tool="$2" how="$3" match="${4:-}" real
+    real="$(command -v "${tool}")" || { echo "ENVIRONMENT: no ${tool}"; exit 2; }
+    mkdir -p "${dir}"
+    {
+        echo '#!/bin/bash'
+        printf 'case "$*" in *%q*) ;; *) exec "%s" "$@" ;; esac\n' "${match}" "${real}"
+        [[ "${how}" == after-output ]] && printf '"%s" "$@"\n' "${real}"
+        echo 'exit 2'
+    } > "${dir}/${tool}"
+    chmod +x "${dir}/${tool}"
+}
+expect_fault() { # expect_fault <label> <shim-dir> <listing-phase: yes|no>
+    local zip ref out rc pairs=("clean.zip:${REF}" "clean.zip:${WORK}/bytes/Fixture.xcframework")
+    [[ "$3" == yes ]] && pairs+=("appledouble.zip:${REF}")
+    for pair in "${pairs[@]}"; do
+        zip="${WORK}/${pair%%:*}"; ref="${pair#*:}"
+        out="$(PATH="$2:${PATH}" "${CHECK}" "${zip}" "${ref}" 2>&1)"; rc=$?
+        if [[ "${rc}" == 2 ]] && grep -qF "check_zip ERROR" <<< "${out}"; then
+            echo "ok   fault: $1 — $(basename "${zip}") vs $(basename "$(dirname "${ref}")") (rc=2)"
+        else
+            echo "FAIL fault: $1 — $(basename "${zip}") vs ${ref}: want rc=2 check_zip ERROR, got rc=${rc}: ${out}"
+            failures=$((failures + 1))
+        fi
+    done
+}
+expect "control for the fault cases: clean zip vs different bytes is a FAIL" 1 "differs from the reference" -- "${WORK}/clean.zip" "${WORK}/bytes/Fixture.xcframework"
+for how in after-output no-output; do
+    for spec in "shasum::no" "readlink::no" "zipinfo::yes" "unzip::no" "ditto::no" "find::no" "sort::no" "diff::no" "wc::yes" \
+                'grep:\._:yes' "grep:__MACOSX:yes" "grep:^l :no"; do
+        tool="${spec%%:*}"; rest="${spec#*:}"; match="${rest%:*}"; listing="${rest##*:}"; d="${WORK}/shim-${tool}-${how}-$(printf '%s' "${match:-all}" | tr -c 'A-Za-z0-9' '_')"
+        make_shim "${d}" "${tool}" "${how}" "${match}"
+        if [[ -n "${match}" ]]; then scope="only calls with '${match}'"; else scope="every call"; fi
+        expect_fault "${tool} exits 2 (${how}, ${scope})" "${d}" "${listing}"
+    done
+done
 
 for z in "$@"; do
     expect "given zip $(basename "${z}") rejected as AppleDouble-polluted" 1 "AppleDouble (._*)" -- "${z}"
