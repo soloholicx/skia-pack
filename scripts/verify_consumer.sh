@@ -3,9 +3,10 @@
 # for every platform the xcframework ships, the way a real consumer would.
 #
 #   verify_consumer.sh local            pre-release: this checkout as a path
-#                                       dependency + the xcframework that
-#                                       scripts/verify.sh unzipped from the
-#                                       release zip (build/verify/xcframework)
+#                                       dependency + the release ZIP itself
+#                                       (artifacts/SkiaPack.xcframework.zip),
+#                                       which SwiftPM extracts the way it will
+#                                       for a published release
 #   verify_consumer.sh exact <version>  post-release: the published tag
 #
 # Checks:
@@ -26,6 +27,11 @@
 #   negative control the same universal build with a deliberate compile error
 #                    must NOT be accepted as "the documented failure".
 #
+#   local only       the xcframework SwiftPM extracted from the zip (for the
+#                    macOS build and for xcodebuild) has no AppleDouble ._*
+#                    file and is byte-identical, tree for tree, to the one
+#                    scripts/verify.sh extracted with ditto
+#
 # The concrete-destination check needs an available simulator device:
 # SKIA_PACK_SIM_UDID=<udid>, else any booted device.
 set -euo pipefail
@@ -36,9 +42,12 @@ case "${MODE}" in
     local)
         XCF="${PACK_ROOT}/build/verify/xcframework/SkiaPack.xcframework"
         [[ -d "${XCF}" ]] || { echo "error: run scripts/verify.sh first (missing ${XCF})" >&2; exit 1; }
+        [[ -f "${PACK_ROOT}/artifacts/SkiaPack.xcframework.zip" ]] \
+            || { echo "error: run scripts/package.sh first (missing artifacts/SkiaPack.xcframework.zip)" >&2; exit 1; }
         export SKIA_PACK_CONSUMER_DEP="path:${PACK_ROOT}"
         # SwiftPM requires a binaryTarget path RELATIVE to the package root.
-        export SKIA_PACK_LOCAL_XCFRAMEWORK="build/verify/xcframework/SkiaPack.xcframework" ;;
+        # The zip, not an extracted directory: consumers get the zip.
+        export SKIA_PACK_LOCAL_XCFRAMEWORK="artifacts/SkiaPack.xcframework.zip" ;;
     exact)
         [[ -n "${2:-}" ]] || { echo "usage: verify_consumer.sh exact <version>" >&2; exit 2; }
         export SKIA_PACK_CONSUMER_DEP="exact:$2"
@@ -47,6 +56,23 @@ case "${MODE}" in
 esac
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
+
+# check_spm_extracted <label> <search root>: local mode only. Exactly one
+# SkiaPack.xcframework that SwiftPM extracted from the zip; no ._* file in it;
+# same files and bytes as the ditto-extracted reference.
+check_spm_extracted() {
+    [[ "${MODE}" == "local" ]] || return 0
+    local label="$1" root="$2" found n
+    found="$(find "${root}" -type d -name SkiaPack.xcframework -prune 2>/dev/null)"
+    n="$(printf '%s' "${found}" | grep -c . || true)"
+    [[ "${n}" == "1" ]] || fail "${label}: expected one SwiftPM-extracted SkiaPack.xcframework under ${root}, found ${n}"
+    local stray
+    stray="$(find "${found}" -name '._*' | head -3)"
+    [[ -z "${stray}" ]] || fail "${label}: SwiftPM-extracted xcframework contains AppleDouble files: ${stray}"
+    diff -r "${XCF}" "${found}" > "${WORK}/${label}-extracted.diff" 2>&1 \
+        || fail "${label}: SwiftPM-extracted xcframework differs from build/verify's (see ${WORK}/${label}-extracted.diff)"
+    echo "consumer ${label}: SwiftPM extracted the zip — no ._* files, identical to the verified tree"
+}
 WORK="${PACK_ROOT}/build/verify-consumer"
 rm -rf "${WORK}"
 mkdir -p "${WORK}"
@@ -57,6 +83,7 @@ echo "consumer: macOS (swift build + run)..."
 swift build > "${WORK}/macos-build.log" 2>&1 || { tail -30 "${WORK}/macos-build.log" >&2; fail "consumer macOS build"; }
 ./.build/debug/consumer-cli || fail "consumer macOS run"
 echo "consumer macOS PASS"
+check_spm_extracted swiftpm "${WORK}/consumer/.build/artifacts"
 
 xcb() { # xcb <log> <destination> [extra xcodebuild settings…]
     local log="$1" dest="$2"; shift 2
@@ -74,6 +101,7 @@ echo "consumer: iOS device (generic/platform=iOS)..."
 xcb "${WORK}/ios-device.log" 'generic/platform=iOS' \
     || { grep -E "error:|ld:" "${WORK}/ios-device.log" | head -20 >&2; fail "consumer iOS device build"; }
 echo "consumer iOS device PASS ($(built_platform Debug-iphoneos))"
+check_spm_extracted xcodebuild "${WORK}/dd/SourcePackages/artifacts"
 
 udid="${SKIA_PACK_SIM_UDID:-$(xcrun simctl list devices booted | sed -n 's/.*(\([0-9A-F-]\{36\}\)) (Booted).*/\1/p' | head -1)}"
 [[ -n "${udid}" ]] || fail "no simulator device for the concrete-destination build — set SKIA_PACK_SIM_UDID or boot one"

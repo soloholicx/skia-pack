@@ -285,7 +285,11 @@ xcodebuild -create-xcframework \
     -library "${IOS_STAGE_ROOT}/ios-arm64-simulator/libSkiaPack.a" -headers "${STAGE}/headers" \
     -output "${XCFRAMEWORK}" > /dev/null
 cp "${embedded_manifest}" "${XCFRAMEWORK}/pack.json"
-ditto -c -k --keepParent "${XCFRAMEWORK}" "${XCZIP}"
+# --norsrc --noextattr: no AppleDouble "._*" entries. SwiftPM extracts the zip
+# with plain unzip, so ditto's default metadata entries (1787 of them in the
+# 150.2.0 zip) would land in every consumer's tree as stray files.
+ditto -c -k --norsrc --noextattr --keepParent "${XCFRAMEWORK}" "${XCZIP}"
+"${PACK_ROOT}/scripts/check_zip.sh" "${XCZIP}" "${XCFRAMEWORK}"
 
 # ------------------------------- standalone, fully resolved pack.json --------
 tarball_sha256="$(shasum -a 256 "${TARBALL}" | awk '{print $1}')"

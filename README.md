@@ -7,12 +7,12 @@ exactly **one Skia and one HarfBuzz**.
 
 ## What a release contains
 
-Each release tag (`150.2.0` = `SK_MILESTONE.PACK.PATCH`) ships three immutable assets:
+Each release tag (`150.2.1` = `SK_MILESTONE.PACK.PATCH`) ships three immutable assets:
 
 | Asset | Consumer | Contents |
 |---|---|---|
 | `skia-pack-<ver>-macos-arm64.tar.gz` | CMake | `pack.json` + `headers/` + `lib/` (individual `.a` archives + merged `libSkiaPack.a`) |
-| `SkiaPack.xcframework.zip` | SwiftPM | three slices — `macos-arm64`, `ios-arm64`, `ios-arm64-simulator` — each `libSkiaPack.a` + `Headers/` (same layout, one shared header tree) |
+| `SkiaPack.xcframework.zip` | SwiftPM | three slices — `macos-arm64`, `ios-arm64`, `ios-arm64-simulator` — each `libSkiaPack.a` + `Headers/` (same layout, one shared header tree). From 150.2.1 the zip carries no AppleDouble `._*` entries (`scripts/check_zip.sh`) |
 | `pack.json` | humans/CI | fully resolved manifest: Skia/HarfBuzz commits, GN args hash, deps externals, toolchain, artifact checksums |
 
 The `headers/` tree is anchored so **one** `-I <pack>/headers` resolves every existing
@@ -29,8 +29,8 @@ definer. `scripts/verify.sh` enforces this as a release gate.
 
 | Slice | Deployment target | Ships as | Notes |
 |---|---|---|---|
-| `macos-arm64` | macOS 14.0 | tarball + xcframework | In 150.2.0 this slice is the 150.1.0 one **reused byte-for-byte** (same Skia/HarfBuzz pins; `pins.json` → `macos_base`). `verify.sh` proves every archive and header identical. |
-| `ios-arm64` | iOS 17.0 | xcframework only | |
+| `macos-arm64` | macOS 14.0 | tarball + xcframework | Since 150.2.0 this slice is the 150.1.0 one **reused byte-for-byte** (same Skia/HarfBuzz pins; `pins.json` → `macos_base`). `verify.sh` proves every archive and header identical. |
+| `ios-arm64` | iOS 17.0 | xcframework only | Built with `SK_METAL_WAIT_UNTIL_SCHEDULED` (from 150.2.1; see below) |
 | `ios-arm64-simulator` | iOS 17.0 | xcframework only | **arm64 only** — simulators on Apple Silicon hosts. There is no x86_64 simulator slice. |
 
 There is no iOS tarball: the tarball exists for CMake consumers, and none build for iOS.
@@ -48,12 +48,20 @@ On iOS, link `Metal`, `Foundation`, `CoreFoundation`, `CoreGraphics`, `CoreText`
 
 Skia's iOS toolchain emits fat `arm64 + arm64e` archives; the pack ships `arm64` only.
 
+**iOS command-buffer scheduling (from 150.2.1).** Both iOS slices are built with
+`-DSK_METAL_WAIT_UNTIL_SCHEDULED`: Ganesh's `GrMtlCommandBuffer::commit` then calls
+`waitUntilScheduled` after every commit that does not wait for completion (synchronous
+commits still wait for completion). This covers only the Metal command buffers Skia itself
+commits, and only commits that succeed; it is not a background-safety guarantee on its own —
+an app must still stop submitting GPU work once it is inactive. `verify.sh` (k) checks the
+compiled objects of every release. The macOS slice is unaffected.
+
 ## Consuming
 
 **SwiftPM** — this repo is itself a package whose only target is a remote binaryTarget:
 
 ```swift
-.package(url: "https://github.com/soloholicx/skia-pack.git", exact: "150.2.0"),
+.package(url: "https://github.com/soloholicx/skia-pack.git", exact: "150.2.1"),
 // …
 .target(name: "YourCore",
         dependencies: [.product(name: "SkiaPack", package: "skia-pack")])
@@ -61,7 +69,7 @@ Skia's iOS toolchain emits fat `arm64 + arm64e` archives; the pack ships `arm64`
 
 **CMake** — download the tarball pinned by your repo's `skia-pack.lock`
 (see slate-kit's `cmake/SkiaPack.cmake`), or point at a local build:
-`-DSLATE_SKIA_PREBUILT_DIR=<skia-pack>/artifacts/skia-pack-150.2.0-macos-arm64`.
+`-DSLATE_SKIA_PREBUILT_DIR=<skia-pack>/artifacts/skia-pack-150.2.1-macos-arm64`.
 
 ## Building locally
 
@@ -72,7 +80,10 @@ Skia's iOS toolchain emits fat `arm64 + arm64e` archives; the pack ships `arm64`
                                         # "macos_base"; otherwise the base release's slice is reused
 ./scripts/package.sh                    # artifacts/ tarball + three-slice xcframework + pack.json
 ./scripts/verify.sh                     # symbol audits, macOS identity, per-slice checks, smoke tests
-./scripts/verify_consumer.sh local      # tests/consumer via SwiftPM: macOS run, iOS + simulator link
+./scripts/verify_consumer.sh local      # tests/consumer via SwiftPM from the release zip: macOS run, iOS + simulator link
+tests/package/test_check_zip.sh         # self-tests of the zip-hygiene and SK_METAL_WAIT_UNTIL_SCHEDULED probes
+tests/package/test_check_wait_scheduled.sh
+tests/package/test_check_privacy_carry.sh # self-test of the privacy-manifest carry checker (test-only fixture)
 ```
 
 `verify.sh` runs the simulator slice's smoke test inside a **booted simulator**

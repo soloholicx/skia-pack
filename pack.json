@@ -1,7 +1,7 @@
 {
   "_template": "Manifest template — scripts/package.sh emits the resolved copy: embedded inside both artifacts (artifacts: null there; an artifact cannot contain its own digest) and standalone at artifacts/pack.json (fully resolved, attached to the release).",
   "name": "skia-pack",
-  "version": "150.2.0",
+  "version": "150.2.1",
   "skia": {
     "commit": "871578a7229026e1ae5bd3654017534bbabf16a1",
     "milestone": 150
