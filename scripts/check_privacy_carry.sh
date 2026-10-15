@@ -20,9 +20,8 @@
 #      category once. Whether a code is the RIGHT code is a review decision,
 #      not this gate's.
 #
-# Standalone: nothing in this repository runs it yet. It is meant to run on an
-# unsigned Release archive of an app consuming the SkiaPack product, once the
-# package carries a manifest (that wiring is a separate, later change).
+# scripts/verify_consumer.sh runs it on an unsigned Release archive of
+# tests/consumer-app, an iOS app consuming the SkiaPack product.
 #
 # Fail closed: every tool's exit status is checked; searches are three-state.
 # Exit: 0 pass; 1 a check failed; 2 usage, environment or tool error.
