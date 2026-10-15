@@ -78,10 +78,13 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # same files and bytes as the ditto-extracted reference.
 check_spm_extracted() {
     [[ "${MODE}" == "local" ]] || return 0
-    local label="$1" root="$2" found n
-    found="$(find "${root}" -type d -name SkiaPack.xcframework -prune 2>/dev/null)"
-    n="$(printf '%s' "${found}" | grep -c . || true)"
+    local label="$1" root="$2" list="${WORK}/$1-xcframework.lst" found n
+    # The count and the path come from the same checked NUL list (nul_records).
+    find "${root}" -type d -name SkiaPack.xcframework -prune -print0 > "${list}" 2> "${WORK}/${label}-xcframework.err" \
+        || fail "${label}: searching ${root} for SkiaPack.xcframework failed: $(head -1 "${WORK}/${label}-xcframework.err")"
+    n="$(nul_records "${list}" count)" || exit 1
     [[ "${n}" == "1" ]] || fail "${label}: expected one SwiftPM-extracted SkiaPack.xcframework under ${root}, found ${n}"
+    found="$(nul_records "${list}" one)" || exit 1
     # The search goes to a file first: `find | head` under pipefail would die of
     # SIGPIPE when there are many hits, exiting without this message.
     find "${found}" -name '._*' > "${WORK}/${label}-appledouble.txt" 2> "${WORK}/${label}-appledouble.err" \
@@ -96,7 +99,7 @@ WORK="${PACK_ROOT}/build/verify-consumer"
 rm -rf "${WORK}"
 mkdir -p "${WORK}"
 PRIVACY_BUNDLE="skia-pack_SkiaPackPrivacy.bundle"
-# count_privacy_bundles, grep_count: a failed search or grep fails the gate — never "0".
+# nul_records, count_privacy_bundles, grep_count: a failed search, read or grep fails the gate — never "0".
 source "${PACK_ROOT}/scripts/consumer_counts.sh"
 # macos_xcodebuild <log> <derived data>: the consumer package built for macOS by xcodebuild.
 macos_xcodebuild() {
