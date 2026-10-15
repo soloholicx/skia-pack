@@ -63,14 +63,44 @@ nothing is loaded from it, and `.dat` / `.res` files cannot be loaded by path or
 name. ICU uses the data linked into the archive (`icudt74`) by default; data an app hands
 over in memory (`udata_setCommonData`, `udata_setAppData`, the `open` functions that take a
 data pointer) is still supported. This covers ICU's own data loading only — Skia's and
-HarfBuzz's file APIs are unchanged and are reached only through the paths a caller passes
-in. `verify.sh` (l) checks the compiled objects of every release. The macOS slice is
+HarfBuzz's file APIs are unchanged (see "Privacy manifest" below for what they access).
+`verify.sh` (l) checks the compiled objects of every release. The macOS slice is
 unaffected. Results compared on the iOS Simulator for one set of multilingual samples do not
 show that every ICU use, or behaviour on a device, is unchanged.
 
+## Privacy manifest (iOS)
+
+The `SkiaPack` product carries `PrivacyInfo.xcprivacy` (`Sources/SkiaPackPrivacy/`) for the
+required-reason APIs the prebuilt **iOS** libraries call. SwiftPM copies it into an iOS app
+as `skia-pack_SkiaPackPrivacy.bundle`; macOS consumers get no bundle, because this manifest
+covers the iOS slices only (the macOS slice has not been audited for it).
+
+| API category | Reasons | Why |
+|---|---|---|
+| `NSPrivacyAccessedAPICategoryFileTimestamp` | `C617.1`, `3B52.1` | Skia and HarfBuzz call `stat`/`fstat` on files whose paths the app passes in (fonts, images, data). |
+| `NSPrivacyAccessedAPICategorySystemBootTime` | `35F9.1` | The DNG SDK's `dng_timer` reads `mach_absolute_time` to measure how long an operation inside the process took — nothing else. |
+
+**Path contract.** The file-timestamp reasons hold only for these paths, and keeping to them
+is the **calling app's** responsibility — skia-pack does not enforce it at run time:
+
+* files inside the app's own container — `C617.1`;
+* files the user explicitly granted access to (e.g. a document picker) — `3B52.1`;
+* resources in the app's main bundle are treated as `C617.1`. This is this project's reading
+  of the reason definitions, not a statement that Apple has approved this manifest.
+
+Any other path is outside what the manifest declares. Note that Skia's own iOS fallback
+stays in place: when a read-only open of a path fails, Skia looks up the same name as a
+resource in the app's **main bundle** (`sk_fopen`, `sk_exists`, `sk_isdir` and the directory
+iterator in `src/ports/SkOSFile_*.cpp`), so a file there can be accessed even though the app
+passed a different path. ICU no longer reads data files on iOS (see above).
+
 ## Consuming
 
-**SwiftPM** — this repo is itself a package whose only target is a remote binaryTarget:
+**SwiftPM** — this repo is itself a package; the `SkiaPack` product is a remote binaryTarget
+plus two resource-wiring targets, `SkiaPackSupport` (all platforms) and `SkiaPackPrivacy`
+(iOS only, via a conditional dependency). They have no headers and no API; a consumer does
+not import them, and the product name, the headers, the frameworks and the linker flags are
+the same as before:
 
 ```swift
 .package(url: "https://github.com/soloholicx/skia-pack.git", exact: "150.2.1"),
@@ -92,7 +122,8 @@ show that every ICU use, or behaviour on a device, is unchanged.
                                         # "macos_base"; otherwise the base release's slice is reused
 ./scripts/package.sh                    # artifacts/ tarball + three-slice xcframework + pack.json
 ./scripts/verify.sh                     # symbol audits, macOS identity, per-slice checks, smoke tests
-./scripts/verify_consumer.sh local      # tests/consumer via SwiftPM from the release zip: macOS run, iOS + simulator link
+./scripts/verify_consumer.sh local      # tests/consumer via SwiftPM from the release zip: macOS run, iOS + simulator link;
+                                        # the iOS app archive carries the privacy manifest, macOS builds do not
 tests/package/test_check_zip.sh         # self-tests of the zip-hygiene and SK_METAL_WAIT_UNTIL_SCHEDULED probes
 tests/package/test_check_wait_scheduled.sh
 tests/package/test_check_icu_no_file_io.sh # self-test of the UCONFIG_NO_FILE_IO probe (verify.sh (l))
