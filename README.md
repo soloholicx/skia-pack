@@ -128,6 +128,7 @@ tests/package/test_check_zip.sh         # self-tests of the zip-hygiene and SK_M
 tests/package/test_check_wait_scheduled.sh
 tests/package/test_check_icu_no_file_io.sh # self-test of the UCONFIG_NO_FILE_IO probe (verify.sh (l))
 tests/package/test_check_privacy_carry.sh # self-test of the privacy-manifest carry checker (test-only fixture)
+tests/package/test_consumer_counts.sh # self-test of verify_consumer.sh's counts (a failed find/grep is never a count)
 ```
 
 `verify.sh` runs the simulator slice's smoke test inside a **booted simulator**

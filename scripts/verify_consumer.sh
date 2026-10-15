@@ -96,14 +96,8 @@ WORK="${PACK_ROOT}/build/verify-consumer"
 rm -rf "${WORK}"
 mkdir -p "${WORK}"
 PRIVACY_BUNDLE="skia-pack_SkiaPackPrivacy.bundle"
-# count_privacy_bundles <root>: how many privacy bundles lie under <root>. A
-# failed search (including a missing <root>) fails the gate — never "0".
-count_privacy_bundles() {
-    local out
-    out="$(find "$1" -name "${PRIVACY_BUNDLE}" -type d -prune 2> "${WORK}/find-privacy.err")" \
-        || fail "searching $1 for ${PRIVACY_BUNDLE} failed: $(head -1 "${WORK}/find-privacy.err")"
-    printf '%s' "${out}" | grep -c . || true
-}
+# count_privacy_bundles, grep_count: a failed search or grep fails the gate — never "0".
+source "${PACK_ROOT}/scripts/consumer_counts.sh"
 # macos_xcodebuild <log> <derived data>: the consumer package built for macOS by xcodebuild.
 macos_xcodebuild() {
     xcodebuild -scheme SkiaPackConsumer -destination 'platform=macOS' -derivedDataPath "$2" \
@@ -135,8 +129,9 @@ if [[ "${MODE}" == local ]]; then
     cp -R "${PACK_ROOT}/Package.swift" "${PACK_ROOT}/Sources" "${CTRL}/"
     cp "${PACK_ROOT}/artifacts/SkiaPack.xcframework.zip" "${CTRL}/artifacts/"
     sed -i '' 's/\.target(name: "SkiaPackPrivacy", condition: \.when(platforms: \[\.iOS\]))/.target(name: "SkiaPackPrivacy", condition: nil)/' "${CTRL}/Package.swift"
-    [[ "$(grep -c 'name: "SkiaPackPrivacy", condition: nil' "${CTRL}/Package.swift" || true)" == 1 \
-        && "$(grep -c 'condition: .when(platforms: \[.iOS\])' "${CTRL}/Package.swift" || true)" == 0 ]] \
+    uncond="$(grep_count 'name: "SkiaPackPrivacy", condition: nil' "${CTRL}/Package.swift")"
+    ios_only="$(grep_count 'condition: .when(platforms: \[.iOS\])' "${CTRL}/Package.swift")"
+    [[ "${uncond}" == 1 && "${ios_only}" == 0 ]] \
         || fail "privacy control: could not make the SkiaPackPrivacy dependency unconditional in the copy"
     cp -R "${PACK_ROOT}/tests/consumer" "${WORK}/consumer-ctrl"
     (cd "${WORK}/consumer-ctrl" && SKIA_PACK_CONSUMER_DEP="path:${CTRL}" swift build > "${WORK}/ctrl-macos-build.log" 2>&1) \
