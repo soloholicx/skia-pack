@@ -31,6 +31,11 @@
 #       waitUntilScheduled, the macOS slice's does not; reverse check — the
 #       probe must REJECT 'on' for the macOS slice, so it is seen detecting
 #       absence on the very bytes under test
+#   (l) UCONFIG_NO_FILE_IO (scripts/check_icu_no_file_io.sh, read from the
+#       objects): both iOS slices have ICU's data-file loading compiled out,
+#       the macOS slice does not; gn/ios*.gn define the macro and gn/macos.gn
+#       does not; reverse check — probing the macOS slice for 'on' must return
+#       exactly 1 (rejected; 3 = probe error never counts)
 #
 # The simulator run needs a booted simulator: SKIA_PACK_SIM_UDID=<udid>, or
 # any booted device. With none, verify FAILS — set
@@ -323,6 +328,35 @@ reverse_rc=0
 [[ "${reverse_rc}" == "1" ]] \
     || { cat "${VERIFY}/wait-reverse.log" >&2; fail "wait(k) reverse check: probing the macOS slice for 'on' returned rc=${reverse_rc}, want 1 (rejected; 3 = probe error)"; }
 echo "wait(k) PASS: both iOS slices call waitUntilScheduled from GrMtlCommandBuffer::commit; macOS does not; reverse check rejected 'on' for macOS"
+
+# ---- (l) UCONFIG_NO_FILE_IO in the iOS slices, not in macOS ---------------------
+# Three-state searches: found (0) / absent (1) / error (anything else — fails).
+for gn in ios ios-sim; do
+    gn_rc=0; grep -qx 'extra_cflags=\[.*"-DUCONFIG_NO_FILE_IO=1".*\]' "${PACK_ROOT}/gn/${gn}.gn" || gn_rc=$?
+    case "${gn_rc}" in
+        0) ;;
+        1) fail "icu(l): gn/${gn}.gn does not define UCONFIG_NO_FILE_IO=1" ;;
+        *) fail "icu(l): searching gn/${gn}.gn failed (grep rc=${gn_rc})" ;;
+    esac
+done
+gn_rc=0; grep -q 'UCONFIG_NO_FILE_IO' "${PACK_ROOT}/gn/macos.gn" || gn_rc=$?
+case "${gn_rc}" in
+    1) ;;
+    0) fail "icu(l): gn/macos.gn mentions UCONFIG_NO_FILE_IO" ;;
+    *) fail "icu(l): searching gn/macos.gn failed (grep rc=${gn_rc})" ;;
+esac
+for platform in "${PACK_IOS_PLATFORMS[@]}"; do
+    "${PACK_ROOT}/scripts/check_icu_no_file_io.sh" "${XCROOT}/${platform}/libSkiaPack.a" on \
+        || fail "icu(l) ${platform}: ICU's data-file loading is not compiled out"
+done
+"${PACK_ROOT}/scripts/check_icu_no_file_io.sh" "${XCROOT}/macos-arm64/libSkiaPack.a" off \
+    || fail "icu(l) macos-arm64: the macOS slice is expected with ICU's data-file loading"
+reverse_rc=0
+"${PACK_ROOT}/scripts/check_icu_no_file_io.sh" "${XCROOT}/macos-arm64/libSkiaPack.a" on > "${VERIFY}/icu-reverse.log" 2>&1 || reverse_rc=$?
+# Only rc 1 is a rejection; rc 3 (probe error) must not stand in for one.
+[[ "${reverse_rc}" == "1" ]] \
+    || { cat "${VERIFY}/icu-reverse.log" >&2; fail "icu(l) reverse check: probing the macOS slice for 'on' returned rc=${reverse_rc}, want 1 (rejected; 3 = probe error)"; }
+echo "icu(l) PASS: both iOS slices have ICU's data-file loading compiled out; macOS does not; reverse check rejected 'on' for macOS"
 
 echo
 if (( ${#SKIPPED[@]} > 0 )); then

@@ -83,6 +83,7 @@ compiled objects of every release. The macOS slice is unaffected.
 ./scripts/verify_consumer.sh local      # tests/consumer via SwiftPM from the release zip: macOS run, iOS + simulator link
 tests/package/test_check_zip.sh         # self-tests of the zip-hygiene and SK_METAL_WAIT_UNTIL_SCHEDULED probes
 tests/package/test_check_wait_scheduled.sh
+tests/package/test_check_icu_no_file_io.sh # self-test of the UCONFIG_NO_FILE_IO probe (verify.sh (l))
 tests/package/test_check_privacy_carry.sh # self-test of the privacy-manifest carry checker (test-only fixture)
 ```
 
