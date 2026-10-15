@@ -66,9 +66,12 @@ check_spm_extracted() {
     found="$(find "${root}" -type d -name SkiaPack.xcframework -prune 2>/dev/null)"
     n="$(printf '%s' "${found}" | grep -c . || true)"
     [[ "${n}" == "1" ]] || fail "${label}: expected one SwiftPM-extracted SkiaPack.xcframework under ${root}, found ${n}"
-    local stray
-    stray="$(find "${found}" -name '._*' | head -3)"
-    [[ -z "${stray}" ]] || fail "${label}: SwiftPM-extracted xcframework contains AppleDouble files: ${stray}"
+    # The search goes to a file first: `find | head` under pipefail would die of
+    # SIGPIPE when there are many hits, exiting without this message.
+    find "${found}" -name '._*' > "${WORK}/${label}-appledouble.txt" 2> "${WORK}/${label}-appledouble.err" \
+        || fail "${label}: searching the SwiftPM-extracted xcframework for ._* failed: $(head -1 "${WORK}/${label}-appledouble.err")"
+    [[ ! -s "${WORK}/${label}-appledouble.txt" ]] \
+        || fail "${label}: SwiftPM-extracted xcframework contains $(wc -l < "${WORK}/${label}-appledouble.txt" | tr -d ' ') AppleDouble files, e.g. $(head -3 "${WORK}/${label}-appledouble.txt" | tr '\n' ' ')"
     diff -r "${XCF}" "${found}" > "${WORK}/${label}-extracted.diff" 2>&1 \
         || fail "${label}: SwiftPM-extracted xcframework differs from build/verify's (see ${WORK}/${label}-extracted.diff)"
     echo "consumer ${label}: SwiftPM extracted the zip — no ._* files, identical to the verified tree"
