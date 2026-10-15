@@ -30,8 +30,8 @@ definer. `scripts/verify.sh` enforces this as a release gate.
 | Slice | Deployment target | Ships as | Notes |
 |---|---|---|---|
 | `macos-arm64` | macOS 14.0 | tarball + xcframework | Since 150.2.0 this slice is the 150.1.0 one **reused byte-for-byte** (same Skia/HarfBuzz pins; `pins.json` → `macos_base`). `verify.sh` proves every archive and header identical. |
-| `ios-arm64` | iOS 17.0 | xcframework only | Built with `SK_METAL_WAIT_UNTIL_SCHEDULED` (from 150.2.1; see below) |
-| `ios-arm64-simulator` | iOS 17.0 | xcframework only | **arm64 only** — simulators on Apple Silicon hosts. There is no x86_64 simulator slice. |
+| `ios-arm64` | iOS 17.0 | xcframework only | Built with `SK_METAL_WAIT_UNTIL_SCHEDULED` and `UCONFIG_NO_FILE_IO=1` (from 150.2.1; see below) |
+| `ios-arm64-simulator` | iOS 17.0 | xcframework only | **arm64 only** — simulators on Apple Silicon hosts. There is no x86_64 simulator slice. Same defines as `ios-arm64`. |
 
 There is no iOS tarball: the tarball exists for CMake consumers, and none build for iOS.
 
@@ -55,6 +55,18 @@ commits still wait for completion). This covers only the Metal command buffers S
 commits, and only commits that succeed; it is not a background-safety guarantee on its own —
 an app must still stop submitting GPU work once it is inactive. `verify.sh` (k) checks the
 compiled objects of every release. The macOS slice is unaffected.
+
+**iOS: no ICU data-file loading (from 150.2.1).** Both iOS slices are built with
+`-DUCONFIG_NO_FILE_IO=1`, so ICU common no longer loads data from files: the `ICU_DATA`
+environment variable is not read, a directory set with `u_setDataDirectory` is recorded but
+nothing is loaded from it, and `.dat` / `.res` files cannot be loaded by path or package
+name. ICU uses the data linked into the archive (`icudt74`) by default; data an app hands
+over in memory (`udata_setCommonData`, `udata_setAppData`, the `open` functions that take a
+data pointer) is still supported. This covers ICU's own data loading only — Skia's and
+HarfBuzz's file APIs are unchanged and are reached only through the paths a caller passes
+in. `verify.sh` (l) checks the compiled objects of every release. The macOS slice is
+unaffected. Results compared on the iOS Simulator for one set of multilingual samples do not
+show that every ICU use, or behaviour on a device, is unchanged.
 
 ## Consuming
 
