@@ -1,6 +1,11 @@
 // swift-tools-version: 5.10
-// skia-pack SwiftPM facade: the package's only target is a remote binaryTarget
-// pointing at the versioned, immutable release artifact. Both slate-kit and
+// skia-pack SwiftPM facade: the binary is a remote binaryTarget pointing at
+// the versioned, immutable release artifact. The SkiaPack product also holds
+// SkiaPackSupport, which on iOS (only) depends on SkiaPackPrivacy, the target
+// carrying the privacy manifest for the APIs the prebuilt libraries call (a
+// binary target cannot carry resources; SwiftPM copies a regular target's
+// resource bundle into the app). Both are resource-wiring details: no headers,
+// no API, nothing for a consumer to import. Both slate-kit and
 // term-kit depend on this package with `exact:` pins; SwiftPM's package-identity
 // machinery then guarantees exactly one Skia + one HarfBuzz per process (or
 // fails resolution loudly on a mismatch).
@@ -28,7 +33,16 @@ if let localPath = ProcessInfo.processInfo.environment["SKIA_PACK_LOCAL_XCFRAMEW
 let package = Package(
     name: "skia-pack",
     products: [
-        .library(name: "SkiaPack", targets: ["SkiaPackBinary"])
+        .library(name: "SkiaPack", targets: ["SkiaPackBinary", "SkiaPackSupport"])
     ],
-    targets: [binaryTarget]
+    targets: [
+        binaryTarget,
+        // The manifest covers the iOS slices only, so the bundle reaches iOS apps
+        // only: macOS consumers get SkiaPackSupport (empty) and no bundle.
+        .target(
+            name: "SkiaPackSupport",
+            dependencies: [.target(name: "SkiaPackPrivacy", condition: .when(platforms: [.iOS]))],
+            publicHeadersPath: "."),
+        .target(name: "SkiaPackPrivacy", resources: [.copy("PrivacyInfo.xcprivacy")], publicHeadersPath: "."),
+    ]
 )
