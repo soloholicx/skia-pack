@@ -141,7 +141,11 @@ for family, version in re.findall(r"\b(GLIBCXX|CXXABI|GLIBC)_([0-9.]+)", out):
     if v > limits[family]:
         sys.exit(f"the smoke executable needs {family}_{version}, newer than the Ubuntu 22.04 baseline")
 needed = sorted(set(re.findall(r"NEEDED\s+(\S+)", subprocess.run(["objdump", "-p", sys.argv[1]], capture_output=True, text=True, check=True).stdout)))
-allowed = {"libfontconfig.so.1", "libfreetype.so.6", "libstdc++.so.6", "libm.so.6", "libgcc_s.so.1", "libc.so.6", "libpthread.so.0", "libdl.so.2"}
+# ld-linux-x86-64.so.2 is glibc's own loader; the linker lists it as NEEDED when
+# an object references a loader symbol directly (seen with Ubuntu 22.04's
+# libstdc++, not with newer ones).
+allowed = {"libfontconfig.so.1", "libfreetype.so.6", "libstdc++.so.6", "libm.so.6", "libgcc_s.so.1", "libc.so.6", "libpthread.so.0", "libdl.so.2",
+           "ld-linux-x86-64.so.2"}
 extra = [n for n in needed if n not in allowed]
 if extra:
     sys.exit(f"the smoke executable loads unexpected shared libraries: {extra}")
