@@ -59,22 +59,54 @@ export CC="${cc}" CXX="${cxx}"
 export CARGO_TARGET_DIR="${WORK}/target"
 unset SKIA_BINARIES_URL FORCE_SKIA_BUILD FORCE_SKIA_BINARIES_DOWNLOAD SKIA_USE_SYSTEM_LIBRARIES
 
-rm -rf "${CARGO_TARGET_DIR}"/release/build/skia-bindings-* "${CARGO_TARGET_DIR}"/release/build/skia-pack-rust-consumer-*
+# Nothing below depends on where cargo puts things inside the target directory
+# (that layout changed between cargo releases): the build script's output is
+# read from cargo's own -vv log, artifact paths from its JSON messages.
+(cd "${PACK_ROOT}/tests/rust-consumer" \
+    && cargo clean --release --locked -p skia-bindings -p skia-pack-rust-consumer) > "${WORK}/clean.log" 2>&1 \
+    || { cat "${WORK}/clean.log" >&2; fail "cargo clean of the two packages the gate rebuilds"; }
 echo "rust consumer: cargo build..."
-(cd "${PACK_ROOT}/tests/rust-consumer" && cargo build --release --locked) > "${WORK}/build.log" 2>&1 \
+(cd "${PACK_ROOT}/tests/rust-consumer" && cargo build --release --locked -vv --message-format=json) \
+    > "${WORK}/messages.json" 2> "${WORK}/build.log" \
     || { tail -60 "${WORK}/build.log" >&2; fail "rust consumer build"; }
+artifact() { # artifact <target-name> <field: rlib|executable>
+    python3 - "${WORK}/messages.json" "$1" "$2" <<'PY'
+import json, sys
+path, name, field = sys.argv[1:4]
+found = set()
+for line in open(path):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    m = json.loads(line)
+    if m.get("reason") != "compiler-artifact" or m["target"]["name"].replace("-", "_") != name.replace("-", "_"):
+        continue
+    if "custom-build" in m["target"]["kind"]:
+        continue
+    if field == "executable":
+        if m.get("executable"):
+            found.add(m["executable"])
+    else:
+        found.update(f for f in m["filenames"] if f.endswith(".rlib"))
+if len(found) != 1:
+    sys.exit(f"error: expected exactly one {field} for {name}, got {sorted(found)}")
+print(found.pop())
+PY
+}
 
 # ---- 1. bind mode -------------------------------------------------------------
-outputs=("${CARGO_TARGET_DIR}"/release/build/skia-bindings-*/output)
-[[ ${#outputs[@]} -eq 1 && -f "${outputs[0]}" ]] || fail "expected exactly one skia-bindings build output, got ${#outputs[@]}"
-grep -q '^STARTING BIND AGAINST SYSTEM SKIA$' "${outputs[0]}" || fail "skia-bindings did not bind against the pack"
-if grep -qE 'STARTING OFFLINE BUILD|DOWNLOAD|TRYING TO DOWNLOAD|ninja' "${outputs[0]}"; then
+# cargo -vv prefixes each line a build script prints with "[<package> <version>] ";
+# the script's stdout lands in cargo's stdout, its stderr in cargo's stderr.
+sed -n 's/^\[skia-bindings [^]]*\] //p' "${WORK}/messages.json" "${WORK}/build.log" > "${WORK}/skia-bindings.output"
+[[ -s "${WORK}/skia-bindings.output" ]] || { tail -40 "${WORK}/build.log" >&2; fail "the skia-bindings build script did not run (no output in cargo's log)"; }
+grep -q '^STARTING BIND AGAINST SYSTEM SKIA$' "${WORK}/skia-bindings.output" || fail "skia-bindings did not bind against the pack"
+if grep -qE 'STARTING OFFLINE BUILD|DOWNLOAD|TRYING TO DOWNLOAD|ninja' "${WORK}/skia-bindings.output"; then
     fail "skia-bindings downloaded or built Skia"
 fi
 echo "bind(1) PASS: skia-bindings bound against the pack; no download, no Skia build"
 
 # ---- 2. run -------------------------------------------------------------------
-BIN="${CARGO_TARGET_DIR}/release/skia-pack-rust-consumer"
+BIN="$(artifact skia-pack-rust-consumer executable)" || fail "locating the consumer executable"
 RUST_CONSUMER_OUT="${WORK}/out" "${BIN}" > "${WORK}/run.log" 2>&1 || { cat "${WORK}/run.log" >&2; fail "rust consumer run"; }
 hb_version="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['harfbuzz']['version'])" "${PACK_DIR}/pack.json")"
 grep -q "^core stub: status 0, skia m157, harfbuzz ${hb_version}," "${WORK}/run.log" || { cat "${WORK}/run.log" >&2; fail "C++ side did not report Skia m157 with HarfBuzz ${hb_version}"; }
@@ -84,8 +116,7 @@ lit="$(sed -n 's/^slint: snapshot .* pixels differing from the corner: \([0-9]*\
 echo "run(2) PASS: $(grep '^core stub' "${WORK}/run.log"); Slint snapshot has ${lit} drawn pixels"
 
 # ---- 3. the Skia in the executable is the pack's ------------------------------
-rlibs=("${CARGO_TARGET_DIR}"/release/deps/libskia_bindings-*.rlib)
-[[ ${#rlibs[@]} -eq 1 ]] || fail "expected exactly one skia-bindings rlib, got ${#rlibs[@]}"
+rlib="$(artifact skia-bindings rlib)" || fail "locating the skia-bindings rlib"
 rm -rf "${WORK}/objects"; mkdir -p "${WORK}/objects/rlib"
 # Hashes of an archive's object members. Fails closed if two members share a
 # name (ar x would silently keep only one of them).
@@ -102,7 +133,7 @@ for name in names:
     print(hashlib.sha256((scratch / name).read_bytes()).hexdigest())
 PY
 }
-extract_hashes "${rlibs[0]}" "${WORK}/objects/rlib" | sort -u > "${WORK}/objects/rlib.sha"
+extract_hashes "${rlib}" "${WORK}/objects/rlib" | sort -u > "${WORK}/objects/rlib.sha"
 total=0
 for lib in libskia.a libskshaper.a libskparagraph.a libskunicode_core.a libskunicode_icu.a; do
     extract_hashes "${PACK_DIR}/lib/${lib}" "${WORK}/objects/${lib}" | sort -u > "${WORK}/objects/${lib}.sha"
