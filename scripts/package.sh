@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
 # Assemble the release artifacts + manifest:
 #   (a) artifacts/skia-pack-<ver>-macos-arm64.tar.gz   — CMake-side tarball
-#       (pack.json + headers/ + lib/ with individual .a archives + merged
-#        libSkiaPack.a). macOS only: no CMake consumer builds for iOS.
+#       (pack.json + skia-defines.txt + headers/ + lib/ with individual .a
+#        archives + merged libSkiaPack.a). macOS only: no CMake consumer builds for iOS.
 #   (b) artifacts/SkiaPack.xcframework.zip             — SwiftPM binaryTarget,
 #       three slices, each libSkiaPack.a + Headers/ (one shared header tree):
 #         macos-arm64 · ios-arm64 · ios-arm64-simulator (Apple Silicon only)
-#   (c) artifacts/pack.json                            — standalone, fully
-#       resolved manifest (includes both artifacts' hashes + spm checksum)
+#   (c) artifacts/skia-pack-<ver>-linux-x86_64.tar.gz   — the Linux slice.
+#       NOT built here: it is the candidate of a build-linux workflow run,
+#       taken and checked by scripts/fetch_linux_candidate.sh, copied in
+#       unchanged. SKIA_PACK_WITHOUT_LINUX=1 packages without it (local
+#       loops on the Apple slices only; scripts/release.sh never sets it).
+#   (d) artifacts/skia-pack-<ver>-skia-headers.tar.gz   — Skia's headers,
+#       public and private, no sources: what rust-skia needs as
+#       SKIA_SOURCE_DIR to bind to a slice's archives. One tree for all slices.
+#   (e) artifacts/pack.json                            — standalone, fully
+#       resolved manifest (includes every artifact's hash + spm checksum)
 #
 # Where the macOS slice comes from:
 #   * pins.json has "macos_base"  → the base release's archives and headers
@@ -39,12 +47,24 @@ IOS_STAGE_ROOT="${PACK_ROOT}/build/package"       # per-slice staging, not shipp
 TARBALL="${ARTIFACTS}/${STAGE_NAME}.tar.gz"
 XCFRAMEWORK="${ARTIFACTS}/SkiaPack.xcframework"
 XCZIP="${ARTIFACTS}/SkiaPack.xcframework.zip"
+LINUX_NAME="skia-pack-${VERSION}-linux-x86_64.tar.gz"
+LINUX_CAND="${ARTIFACTS}/linux-candidate"
+HEADERS_STAGE_NAME="skia-pack-${VERSION}-skia-headers"
+HEADERS_TARBALL="${ARTIFACTS}/${HEADERS_STAGE_NAME}.tar.gz"
+WITH_LINUX=1
+if [[ "${SKIA_PACK_WITHOUT_LINUX:-0}" == "1" ]]; then
+    WITH_LINUX=0
+    echo "[package] SKIA_PACK_WITHOUT_LINUX=1 — packaging WITHOUT the linux-x86_64 slice (not a release set)"
+else
+    # Checked before anything is wiped or built on.
+    "${PACK_ROOT}/scripts/fetch_linux_candidate.sh" --check
+fi
 
 # Fail early, before anything is wiped: every slice's inputs must exist.
 for platform in "${PACK_IOS_PLATFORMS[@]}"; do
     pack_platform_init "${PACK_ROOT}" "${platform}"
     [[ -f "${PACK_SKIA_OUT}/libskia.a" ]]  || { echo "error: run scripts/build.sh ${platform} first (missing ${PACK_SKIA_OUT}/libskia.a)" >&2; exit 1; }
-    [[ -f "${PACK_HB_OUT}/libharfbuzz.a" ]] || { echo "error: run scripts/build.sh ${platform} first (missing ${PACK_HB_OUT}/libharfbuzz.a)" >&2; exit 1; }
+    [[ -f "${PACK_HB_OUT}/pack/libharfbuzz.a" ]] || { echo "error: run scripts/build.sh ${platform} first (missing ${PACK_HB_OUT}/pack/libharfbuzz.a)" >&2; exit 1; }
     if [[ -f "${PACK_SKIA_OUT}/libharfbuzz.a" ]]; then
         echo "error: Skia ${platform} build produced its own libharfbuzz.a — system-HB wiring regressed" >&2
         exit 1
@@ -61,39 +81,21 @@ esac
 if [[ "${MACOS_ORIGIN}" == "built" ]]; then
     pack_platform_init "${PACK_ROOT}" macos-arm64
     [[ -f "${PACK_SKIA_OUT}/libskia.a" ]]  || { echo "error: run scripts/build.sh first (missing ${PACK_SKIA_OUT}/libskia.a)" >&2; exit 1; }
-    [[ -f "${PACK_HB_OUT}/libharfbuzz.a" ]] || { echo "error: run scripts/build.sh first (missing ${PACK_HB_OUT}/libharfbuzz.a)" >&2; exit 1; }
+    [[ -f "${PACK_HB_OUT}/pack/libharfbuzz.a" ]] || { echo "error: run scripts/build.sh first (missing ${PACK_HB_OUT}/pack/libharfbuzz.a)" >&2; exit 1; }
     if [[ -f "${PACK_SKIA_OUT}/libharfbuzz.a" ]]; then
         echo "error: Skia build produced its own libharfbuzz.a — system-HB wiring regressed" >&2
         exit 1
     fi
 fi
 
-rm -rf "${STAGE}" "${TARBALL}" "${XCFRAMEWORK}" "${XCZIP}" "${ARTIFACTS}/pack.json" "${IOS_STAGE_ROOT}"
+rm -rf "${STAGE}" "${TARBALL}" "${XCFRAMEWORK}" "${XCZIP}" "${ARTIFACTS}/pack.json" "${IOS_STAGE_ROOT}" \
+       "${ARTIFACTS}/${LINUX_NAME}" "${HEADERS_TARBALL}" "${ARTIFACTS}/${HEADERS_STAGE_NAME}"
 mkdir -p "${ARTIFACTS}" "${IOS_STAGE_ROOT}"
 
 # ---------------------------------------------------------------- headers ----
-# Anchored so one -I <pack>/headers resolves every existing include spelling:
-#   "include/core/SkCanvas.h", "modules/skparagraph/include/Paragraph.h", <hb.h>
-stage_headers() { # stage_headers <dest>
-    local dest="$1"
-    mkdir -p "${dest}"
-    cp -R "${SKIA_ROOT}/include" "${dest}/include"          # public + private
-    mkdir -p "${dest}/modules/skcms/src"
-    cp "${SKIA_ROOT}/modules/skcms/"*.h "${dest}/modules/skcms/"
-    cp "${SKIA_ROOT}/modules/skcms/src/"*.h "${dest}/modules/skcms/src/"  # skcms.h -> "src/skcms_public.h"
-    local mod
-    for mod in skshaper skparagraph skunicode; do
-        mkdir -p "${dest}/modules/${mod}"
-        cp -R "${SKIA_ROOT}/modules/${mod}/include" "${dest}/modules/${mod}/include"
-    done
-    cp "${HB_ROOT}/src/"hb*.h "${dest}/"                    # 48 flat HarfBuzz headers
-    # The one src/ header the public surface transitively needs:
-    # modules/skunicode/include/SkUnicode.h -> "src/base/SkUTF.h" (self-contained,
-    # pulls only include/private/base/SkAPI.h). Verified as the ONLY "src/..."
-    # spelling reachable from the packaged tree (grep sweep in verify evidence).
-    mkdir -p "${dest}/src/base"
-    cp "${SKIA_ROOT}/src/base/SkUTF.h" "${dest}/src/base/"
-}
+# stage_headers <dest> / stage_bind_headers <dest>: scripts/headers.sh.
+# shellcheck source=scripts/headers.sh
+source "${PACK_ROOT}/scripts/headers.sh"
 
 # ------------------------------------------------------------ macOS stage ----
 if [[ "${MACOS_ORIGIN}" == "reused" ]]; then
@@ -102,6 +104,7 @@ if [[ "${MACOS_ORIGIN}" == "reused" ]]; then
     mkdir -p "${STAGE}"
     cp -R "${BASE_STAGE}/headers" "${STAGE}/headers"
     cp -R "${BASE_STAGE}/lib" "${STAGE}/lib"
+    cp "${BASE_STAGE}/skia-defines.txt" "${STAGE}/skia-defines.txt"
     # The header tree is shared by all three slices, so it must also be exactly
     # what the pinned sources the iOS slices were just built from would stage.
     stage_headers "${IOS_STAGE_ROOT}/headers-from-source"
@@ -115,9 +118,13 @@ else
     mkdir -p "${STAGE}/lib"
     stage_headers "${STAGE}/headers"
     # Every archive the Skia build produced (18 with system-HB — no vendored HB),
-    # plus the standalone HarfBuzz 14.2 archive shipped AS lib/libharfbuzz.a.
+    # plus the standalone HarfBuzz archive shipped AS lib/libharfbuzz.a.
     cp "${PACK_SKIA_OUT}/"*.a "${STAGE}/lib/"
-    cp "${PACK_HB_OUT}/libharfbuzz.a" "${STAGE}/lib/libharfbuzz.a"
+    cp "${PACK_HB_OUT}/pack/libharfbuzz.a" "${STAGE}/lib/libharfbuzz.a"
+    # The preprocessor defines the Skia build used (scripts/skia_defines.py):
+    # what a consumer binding rust-skia to these archives passes as
+    # SKIA_BUILD_DEFINES.
+    cp "${PACK_SKIA_OUT}/skia-defines.txt" "${STAGE}/skia-defines.txt"
     # Merged archive: libtool -static preserves per-object granularity (dead
     # stripping still works), unlike ld -r. Duplicate member basenames across
     # libjpeg{,12,16}.a are appended, not collapsed (SPIKE S4).
@@ -131,7 +138,7 @@ for platform in "${PACK_IOS_PLATFORMS[@]}"; do
     pack_platform_init "${PACK_ROOT}" "${platform}"
     slice="${IOS_STAGE_ROOT}/${platform}"
     mkdir -p "${slice}/lib"
-    for archive in "${PACK_SKIA_OUT}"/lib*.a "${PACK_HB_OUT}/libharfbuzz.a"; do
+    for archive in "${PACK_SKIA_OUT}"/lib*.a "${PACK_HB_OUT}/pack/libharfbuzz.a"; do
         name="$(basename "${archive}")"
         archs="$(lipo -archs "${archive}")"
         case " ${archs} " in
@@ -287,6 +294,20 @@ xcodebuild -create-xcframework \
 cp "${embedded_manifest}" "${XCFRAMEWORK}/pack.json"
 ditto -c -k --keepParent "${XCFRAMEWORK}" "${XCZIP}"
 
+# ------------------------------------------------- skia-headers (rust-skia) ----
+stage_bind_headers "${ARTIFACTS}/${HEADERS_STAGE_NAME}"
+headers_tree="$(headers_tree_sha256 "${ARTIFACTS}/${HEADERS_STAGE_NAME}")"
+tar -C "${ARTIFACTS}" -czf "${HEADERS_TARBALL}" "${HEADERS_STAGE_NAME}"
+headers_sha256="$(shasum -a 256 "${HEADERS_TARBALL}" | awk '{print $1}')"
+
+# ------------------------------------------------------------ Linux slice ----
+linux_json=""
+if [[ "${WITH_LINUX}" == "1" ]]; then
+    cp "${LINUX_CAND}/${LINUX_NAME}" "${ARTIFACTS}/${LINUX_NAME}"
+    cmp -s "${LINUX_CAND}/${LINUX_NAME}" "${ARTIFACTS}/${LINUX_NAME}" || { echo "error: copy of ${LINUX_NAME} differs" >&2; exit 1; }
+    linux_json="${LINUX_CAND}/linux-x86_64.json"
+fi
+
 # ------------------------------- standalone, fully resolved pack.json --------
 tarball_sha256="$(shasum -a 256 "${TARBALL}" | awk '{print $1}')"
 zip_sha256="$(shasum -a 256 "${XCZIP}" | awk '{print $1}')"
@@ -294,14 +315,30 @@ spm_checksum="$(cd "${PACK_ROOT}" && swift package compute-checksum "${XCZIP}")"
 
 python3 - "$embedded_manifest" "${ARTIFACTS}/pack.json" \
           "${STAGE_NAME}.tar.gz" "$tarball_sha256" \
-          "SkiaPack.xcframework.zip" "$zip_sha256" "$spm_checksum" <<'PY'
+          "SkiaPack.xcframework.zip" "$zip_sha256" "$spm_checksum" \
+          "${HEADERS_STAGE_NAME}.tar.gz" "$headers_sha256" "$headers_tree" "$linux_json" \
+          "$(cat "${LINUX_CAND}/RUN_ID" 2>/dev/null || true)" "$([[ -f "${LINUX_CAND}/ATTESTED" ]] && echo 1 || echo 0)" <<'PY'
 import json, pathlib, sys
-src, dst, tar_name, tar_sha, zip_name, zip_sha, spm = sys.argv[1:8]
+(src, dst, tar_name, tar_sha, zip_name, zip_sha, spm,
+ headers_name, headers_sha, headers_tree, linux_json, linux_run, linux_attested) = sys.argv[1:14]
 manifest = json.loads(pathlib.Path(src).read_text())
 manifest["artifacts"] = {
     "macos-arm64-tarball": {"file": tar_name, "sha256": tar_sha},
     "xcframework": {"file": zip_name, "sha256": zip_sha, "spm_checksum": spm},
+    # Skia's headers without sources: SKIA_SOURCE_DIR for rust-skia binding to
+    # a slice. tree_sha256 is scripts/headers.sh headers_tree_sha256.
+    "skia-headers": {"file": headers_name, "sha256": headers_sha, "tree_sha256": headers_tree},
 }
+if linux_json:
+    linux = json.loads(pathlib.Path(linux_json).read_text())
+    artifact = linux.pop("artifact")
+    for key in ("name", "version", "platform", "skia", "harfbuzz"):
+        linux.pop(key)
+    # Built by a build-linux workflow run, not on the release machine.
+    linux["built_by"] = {"workflow": "build-linux", "run_id": linux_run, "attested": linux_attested == "1"}
+    manifest["slices"]["linux-x86_64"] = linux
+    manifest["platforms"] = list(manifest["slices"])
+    manifest["artifacts"]["linux-x86_64-tarball"] = artifact
 pathlib.Path(dst).write_text(json.dumps(manifest, indent=2) + "\n")
 PY
 
@@ -311,4 +348,11 @@ echo "    sha256:     ${tarball_sha256}"
 echo "  xcframework:  ${XCZIP}"
 echo "    sha256:     ${zip_sha256}"
 echo "    spm:        ${spm_checksum}"
+echo "  skia-headers: ${HEADERS_TARBALL}"
+echo "    sha256:     ${headers_sha256}"
+if [[ "${WITH_LINUX}" == "1" ]]; then
+    echo "  linux:        ${ARTIFACTS}/${LINUX_NAME} (candidate of run $(cat "${LINUX_CAND}/RUN_ID"))"
+else
+    echo "  linux:        NOT INCLUDED (SKIA_PACK_WITHOUT_LINUX=1)"
+fi
 echo "  manifest:     ${ARTIFACTS}/pack.json"

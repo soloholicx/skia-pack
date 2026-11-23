@@ -1,0 +1,68 @@
+# skia-pack canonical GN args — Linux x86_64, official static build.
+# One arg per line. Lines starting with '#' are comments; scripts/build.sh
+# strips them and joins the rest into the --args string.
+#
+# Same rule as gn/macos.gn: the set rust-skia 0.157.0 generates (here for the
+# features gl, vulkan, pdf, textlayout, embed-icudtl on x86_64 Linux), plus
+# the pack's own differences. scripts/skia_defines.py checks the resulting
+# defines against gn/rust-skia/linux-x86_64.defines.txt.
+#
+# System libraries the archives expect the consumer to link (headers must be
+# present at build time: libfreetype-dev, libfontconfig-dev): FreeType and
+# Fontconfig. Everything else is vendored.
+
+# ---- rust-skia's set, verbatim (skia-bindings 0.157.0, x86_64 Linux) -------
+is_skia_standalone=false
+is_official_build=true
+skia_use_partition_alloc=false
+is_debug=false
+skia_enable_svg=false
+skia_enable_ganesh=true
+skia_enable_graphite=false
+skia_enable_skottie=false
+skia_enable_pdf=true
+skia_use_gl=true
+skia_use_egl=false
+skia_use_x11=false
+skia_use_system_libpng=false
+skia_use_system_zlib=false
+skia_use_xps=false
+skia_use_dng_sdk=false
+skia_use_libjpeg_turbo_decode=true
+skia_use_libjpeg_turbo_encode=true
+skia_use_vulkan=true
+skia_enable_spirv_validation=false
+skia_enable_skshaper=true
+skia_use_icu=true
+skia_use_system_icu=false
+skia_use_harfbuzz=true
+skia_pdf_subset_harfbuzz=true
+skia_enable_skparagraph=true
+skia_use_freetype=true
+skia_use_freetype_woff2=false
+skia_system_freetype2_include_path="/does/not/exist"
+skia_use_system_libjpeg_turbo=false
+skia_use_expat=true
+skia_use_system_expat=false
+target_os="linux"
+target_cpu="x86_64"
+extra_asmflags=["--target=x86_64-linux-gnu"]
+
+# ---- pack differences ------------------------------------------------------
+# 1. HarfBuzz: the pack's standalone archive is the one definer of hb_*
+#    (see gn/macos.gn). On Linux it is built without FreeType and without
+#    CoreText.
+skia_use_system_harfbuzz=true
+# 2. Image codecs: WebP stays on, vendored (see gn/macos.gn).
+skia_use_system_libwebp=false
+# 3. Not built at all.
+skia_enable_tools=false
+is_component_build=false
+# 4. Compiler: named with its version, so the build does not depend on what
+#    "clang" points at. Clang 17, the version the S1 study of term-kit's Slint
+#    Shell validated; the C++ standard library is the system's libstdc++.
+cc="clang-17"
+cxx="clang++-17"
+# 5. Language level. rust-skia's extra_cflags, plus the HarfBuzz include.
+extra_cflags_cc=["-std=c++20"]
+extra_cflags=["-I=/usr/include/freetype2","-I/usr/include/freetype2","-O3","--target=x86_64-linux-gnu","-I@HB_INCLUDE@"]

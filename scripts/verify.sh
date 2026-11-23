@@ -6,7 +6,7 @@
 #   (a) every Skia-produced archive defines zero _hb_* symbols
 #   (b) across all packaged archives, ONLY libharfbuzz.a defines _hb_*
 #       (and the merged libSkiaPack.a defines exactly the same set, no dupes)
-#   (c) libharfbuzz.a embeds the 14.2.0 version string
+#   (c) libharfbuzz.a embeds the HarfBuzz version string pack.json declares
 #   (d) libtool-merge integrity: member count and defined-symbol count of
 #       libSkiaPack.a equal the sums over the input archives
 #   (e) smoke test builds AND runs against BOTH artifact forms:
@@ -19,10 +19,13 @@
 #       the same header tree
 #   (h) per iOS slice, on the release bytes: arm64 only; every object's
 #       LC_BUILD_VERSION is the slice's platform at minos 17.0; _hb_* defined
-#       once, same set as macOS; HarfBuzz 14.2.0; merge integrity against the
+#       once, same set as macOS; the declared HarfBuzz version; merge integrity against the
 #       packaging stage; the smoke test LINKS as a consumer would, and the
 #       simulator build RUNS inside a booted simulator
 #   (i) gn/ios*.gn share every non-platform arg with gn/macos.gn verbatim
+#   (j) the tarball's skia-defines.txt differs from the one rust-skia's own
+#       build writes only as gn/rust-skia/macos-arm64.allowed-diff.txt lists;
+#       the packaged headers include no non-public path that is not shipped
 #
 # The simulator run needs a booted simulator: SKIA_PACK_SIM_UDID=<udid>, or
 # any booted device. With none, verify FAILS — set
@@ -89,9 +92,12 @@ dupes="$(nm -jgU "${LIB}/libSkiaPack.a" | grep '^_hb_' | sort | uniq -d | wc -l 
 echo "audit(b+) PASS: merged archive defines the same ${merged_hb} _hb_* symbols, no duplicates"
 
 # ---- audit (c): HB version string ------------------------------------------
-strings "${LIB}/libharfbuzz.a" | grep -q '14\.2\.0' \
-    || fail "audit(c): 14.2.0 version string not found in libharfbuzz.a"
-echo "audit(c) PASS: libharfbuzz.a embeds 14.2.0"
+HB_VERSION="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['harfbuzz']['version'])" "${PACKDIR}/pack.json")"
+[[ "${HB_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "audit(c): pack.json harfbuzz.version '${HB_VERSION}' is not x.y.z"
+# grep -c (not -q): -q exits at the first match and SIGPIPEs `strings`.
+(( $(strings "${LIB}/libharfbuzz.a" | grep -cF "${HB_VERSION}" || true) >= 1 )) \
+    || fail "audit(c): ${HB_VERSION} version string not found in libharfbuzz.a"
+echo "audit(c) PASS: libharfbuzz.a embeds ${HB_VERSION}"
 
 # ---- audit (d): libtool-merge integrity -------------------------------------
 members_of()  { ar -t "$1" | grep -cv '^__\.SYMDEF' || true; }
@@ -112,6 +118,17 @@ merged_symbols="$(symbols_of "${LIB}/libSkiaPack.a")"
     || fail "audit(d): defined-symbol count ${merged_symbols} != input sum ${sum_symbols}"
 echo "audit(d) PASS: libSkiaPack.a = ${merged_members} members, ${merged_symbols} defined symbols (equals input sums)"
 
+# ---- (j) defines and header closure ------------------------------------------
+[[ -f "${PACKDIR}/skia-defines.txt" ]] || fail "defines(j): tarball has no skia-defines.txt"
+python3 "${PACK_ROOT}/scripts/skia_defines.py" check macos-arm64 "${PACKDIR}/skia-defines.txt" \
+    || fail "defines(j): skia-defines.txt differs from rust-skia's in a way gn/rust-skia/macos-arm64.allowed-diff.txt does not list"
+src_spellings="$(grep -rhoE '#[[:space:]]*include[[:space:]]+"(src|third_party|tools)/[^"]+"' "${PACKDIR}/headers" | sed -E 's/.*"(.*)"/\1/' | sort -u | tr '\n' ' ')"
+[[ "${src_spellings}" == "src/core/SkUTF.h src/skcms_public.h " ]] \
+    || fail "headers(j): packaged headers include non-public paths other than the two shipped ones: ${src_spellings}"
+[[ -f "${PACKDIR}/headers/src/core/SkUTF.h" && -f "${PACKDIR}/headers/modules/skcms/src/skcms_public.h" ]] \
+    || fail "headers(j): a non-public header the packaged tree includes is not shipped"
+echo "defines(j) PASS: skia-defines.txt matches rust-skia's except for the listed differences; header tree is closed"
+
 # ---- (e) smoke test, both artifact forms ------------------------------------
 FRAMEWORKS=(
     -framework Metal -framework MetalKit -framework Foundation
@@ -126,8 +143,8 @@ SMOKE_SRC="${PACK_ROOT}/tests/smoke/smoke.cpp"
 BUNDLED_LIBS=(
     libskia.a libskshaper.a libskparagraph.a libskunicode_core.a
     libskunicode_icu.a libharfbuzz.a libicu.a libpng.a libwebp.a
-    libwebp_sse41.a libjpeg.a libjpeg12.a libjpeg16.a libskcms.a
-    libdng_sdk.a libpiex.a libexpat.a libwuffs.a libzlib.a
+    libwebp_sse41.a libwebp_avx2.a libjpeg.a libjpeg12.a libjpeg16.a
+    libskcms.a libexpat.a libwuffs.a libzlib.a
 )
 link_libs=()
 for lib in "${BUNDLED_LIBS[@]}"; do
@@ -228,7 +245,7 @@ for platform in "${PACK_IOS_PLATFORMS[@]}"; do
     [[ "${ios_hb_set}" == "${macos_hb_set}" ]] || fail "ios(h) ${platform}: defined _hb_* set differs from macOS libharfbuzz.a"
     # grep -c (not -q): -q exits at the first match and SIGPIPEs `strings` on a
     # 48 MB archive, which pipefail then reports as a failure.
-    (( $(strings "${lib}" | grep -c '14\.2\.0' || true) >= 1 )) || fail "ios(h) ${platform}: 14.2.0 version string not found"
+    (( $(strings "${lib}" | grep -cF "${HB_VERSION}" || true) >= 1 )) || fail "ios(h) ${platform}: ${HB_VERSION} version string not found"
 
     stage="${PACK_ROOT}/build/package/${platform}"
     if [[ -d "${stage}/lib" ]]; then
@@ -257,7 +274,7 @@ for platform in "${PACK_IOS_PLATFORMS[@]}"; do
         -I "${XCROOT}/${platform}/Headers" "${SMOKE_SRC}" "${lib}" "${IOS_FRAMEWORKS[@]}" \
         -o "${VERIFY}/smoke_${platform}"
     built="$(vtool -show-build "${VERIFY}/smoke_${platform}" | awk '/platform/{p=$2} /minos/{m=$2} END{print p, m}')"
-    echo "ios(h) PASS ${platform}: arm64 only; ${members} objects all platform ${PACK_MACHO_PLATFORM} minos ${PACK_MINOS}; _hb_* set == macOS, no dupes; HB 14.2.0; ${merge_note}; smoke links (${built})"
+    echo "ios(h) PASS ${platform}: arm64 only; ${members} objects all platform ${PACK_MACHO_PLATFORM} minos ${PACK_MINOS}; _hb_* set == macOS, no dupes; HB ${HB_VERSION}; ${merge_note}; smoke links (${built})"
 done
 
 # The simulator smoke binary is a plain Mach-O for iOS Simulator: run it inside
@@ -275,10 +292,17 @@ else
 fi
 
 # ---- (i) gn arg drift ---------------------------------------------------------
-gn_shared() { grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' -e '^extra_cflags=' "$1"; }
+# Platform args are left out on BOTH sides; everything else must be identical,
+# in the same order.
+gn_shared() {
+    grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$1" \
+        | grep -v -e '^extra_cflags=' -e '^target_os=' -e '^skia_use_gl=' \
+                  -e '^ios_use_simulator=' -e '^ios_min_target=' -e '^skia_ios_use_signing='
+}
 for gn in ios ios-sim; do
-    shared="$(gn_shared "${PACK_ROOT}/gn/${gn}.gn" | grep -v -e '^target_os=' -e '^ios_use_simulator=' -e '^ios_min_target=' -e '^skia_ios_use_signing=')"
-    [[ "${shared}" == "$(gn_shared "${PACK_ROOT}/gn/macos.gn")" ]] || fail "gn(i): gn/${gn}.gn shared args drifted from gn/macos.gn"
+    [[ "$(gn_shared "${PACK_ROOT}/gn/${gn}.gn")" == "$(gn_shared "${PACK_ROOT}/gn/macos.gn")" ]] \
+        || fail "gn(i): gn/${gn}.gn shared args drifted from gn/macos.gn"
+    grep -qx 'skia_use_gl=false' "${PACK_ROOT}/gn/${gn}.gn" || fail "gn(i): gn/${gn}.gn must set skia_use_gl=false"
 done
 echo "gn(i) PASS: gn/ios.gn and gn/ios-sim.gn share every non-platform arg with gn/macos.gn"
 

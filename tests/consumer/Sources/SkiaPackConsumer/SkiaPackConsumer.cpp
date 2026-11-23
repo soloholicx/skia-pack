@@ -18,7 +18,7 @@
 namespace tl = skia::textlayout;
 
 int skia_pack_consumer_check(void) {
-    if (std::strncmp(hb_version_string(), "14.2", 4) != 0) return 1;
+    if (std::strncmp(hb_version_string(), "14.5", 4) != 0) return 1;
     sk_sp<SkFontMgr> fontMgr = SkFontMgr_New_CoreText(nullptr);
     sk_sp<SkUnicode> unicode = SkUnicodes::ICU::Make();
     if (!fontMgr || !unicode) return 2;

@@ -71,7 +71,10 @@ done
 # keep working — forced when the skia checkout moved (DEPS may differ).
 SKIA_ROOT="${PACK_ROOT}/third_party/skia"
 if [[ "${skia_changed}" == "1" || ! -d "${SKIA_ROOT}/third_party/externals/icu" || "${SKIA_PACK_SYNC_DEPS:-0}" == "1" ]]; then
-    (cd "${SKIA_ROOT}" && python3 tools/git-sync-deps)
+    # GIT_SYNC_DEPS_SKIP_EMSDK: the fork's DEPS (rust-skia's) has no emsdk
+    # entry, and the script's emsdk activation step fails without it. emsdk
+    # is only needed for WebAssembly builds.
+    (cd "${SKIA_ROOT}" && GIT_SYNC_DEPS_SKIP_EMSDK=1 python3 tools/git-sync-deps)
 else
     echo "[fetch] skia externals present — skipping git-sync-deps (SKIA_PACK_SYNC_DEPS=1 to force)"
 fi

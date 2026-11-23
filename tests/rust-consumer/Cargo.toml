@@ -1,0 +1,23 @@
+# Rust consumer test: Slint (Skia renderer, through rust-skia) and a C++
+# static library that uses Skia, SkShaper, ICU and HarfBuzz, linked into ONE
+# executable, both taking Skia from the pack. rust-skia binds to the pack's
+# archives instead of downloading or building its own Skia.
+# Run through scripts/verify_rust_consumer.sh, which sets the environment.
+[package]
+name = "skia-pack-rust-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+slint = { version = "=1.19.0", default-features = false, features = [
+    "std", "compat-1-2", "backend-winit", "renderer-skia",
+] }
+# The crate Slint uses. `textlayout` makes rust-skia link the shaper,
+# paragraph and unicode modules the C++ side needs too.
+skia-safe = { version = "=0.157.0", features = ["textlayout"] }
+
+[build-dependencies]
+cc = "1"
+
+[workspace]

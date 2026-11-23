@@ -61,6 +61,10 @@ jobs:
       - name: Verify the published assets (downloads only — no build, no upload)
         env:
           GH_TOKEN: ${{ github.token }}
+          # The Rust consumer gate opens a window; it has not been proven on a
+          # hosted macOS runner. It ran on the release machine at release time
+          # (scripts/release.sh) and runs on Linux below. Reported as skipped.
+          SKIA_PACK_VERIFY_SKIP_RUST_CONSUMER: "1"
         run: ./scripts/verify_published.sh "$VERSION"
 
       - name: Keep the verification logs
@@ -74,3 +78,33 @@ jobs:
             build/verify-published/*/pack.json
             build/verify/*.log
             build/verify-consumer/*.log
+
+  # The Linux slice's gates, on the published bytes (157.1.0 or later).
+  verify-published-linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ github.event.release.tag_name || inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.VERSION }}
+
+      - name: Toolchain
+        run: ./scripts/ci_linux_setup.sh
+
+      - name: Verify the published Linux assets (downloads only — no build, no upload)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: xvfb-run -a -s "-screen 0 1280x800x24" ./scripts/verify_published_linux.sh "$VERSION"
+
+      - name: Keep the verification logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-published-linux-${{ env.VERSION }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            build/verify-published/*/pack.json
+            build/verify-rust-consumer/*.log

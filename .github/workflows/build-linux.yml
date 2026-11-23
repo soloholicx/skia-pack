@@ -1,0 +1,91 @@
+# Builds the linux-x86_64 slice CANDIDATE. Manual only.
+#
+# The Apple slices are built on the release machine (a Mac), which cannot
+# build this one. This job builds it on a GitHub-hosted runner, runs the
+# slice's release gate and the Rust consumer gate on the packaged bytes, and
+# keeps the tarball and its manifest as a workflow artifact.
+#
+# It publishes NOTHING: no release, no tag, no upload outside this run's
+# artifacts (contents: read). scripts/release.sh, run by a human on the Mac,
+# takes the candidate of a run it is pointed at
+# (scripts/fetch_linux_candidate.sh), checks it was built from the commit
+# being released and that its bytes match its manifest, and freezes it with
+# the other assets.
+#
+# ubuntu-22.04 is the baseline on purpose: glibc 2.35 and a libstdc++ no newer
+# than GLIBCXX_3.4.30, which scripts/verify_linux.sh asserts.
+name: build-linux
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-linux-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain (Clang 17 from apt.llvm.org; build and test dependencies)
+        run: ./scripts/ci_linux_setup.sh
+
+      - name: Build (HarfBuzz, then Skia)
+        run: ./scripts/build.sh linux-x86_64
+
+      - name: Package
+        run: ./scripts/package_linux.sh
+
+      - name: Release gate on the packaged bytes
+        env:
+          SKIA_PACK_LINUX_SLICE_JSON: artifacts/linux-x86_64.json
+        run: ./scripts/verify_linux.sh
+
+      - name: Rust consumer gate (one Skia per process)
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          xvfb-run -a -s "-screen 0 1280x800x24" ./scripts/verify_rust_consumer.sh \
+            "build/verify-linux/skia-pack-${version}-linux-x86_64" build/package/skia-headers
+
+      - name: Record what built it
+        run: |
+          set -euo pipefail
+          {
+            echo "commit=${GITHUB_SHA}"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "run_attempt=${GITHUB_RUN_ATTEMPT}"
+            echo "image=${ImageOS:-} ${ImageVersion:-}"
+          } > artifacts/linux-x86_64.provenance
+          sha256sum artifacts/*.tar.gz artifacts/linux-x86_64.json
+          cat artifacts/linux-x86_64.provenance
+
+      - name: Keep the candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-candidate
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            artifacts/skia-pack-*-linux-x86_64.tar.gz
+            artifacts/linux-x86_64.json
+            artifacts/linux-x86_64.provenance
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-logs
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            build/verify-rust-consumer/*.log
+            build/verify-linux/smoke.png
+            build/verify-rust-consumer/out/*.png

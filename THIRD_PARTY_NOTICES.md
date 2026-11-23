@@ -18,8 +18,11 @@ headline licenses are reproduced verbatim below.
 | libjpeg-turbo | IJG + BSD 3-Clause + zlib | `third_party/skia/third_party/externals/libjpeg-turbo/LICENSE.md` |
 | Expat | MIT | `third_party/skia/third_party/externals/expat/COPYING` |
 | Wuffs | Apache-2.0 | `third_party/skia/third_party/externals/wuffs/LICENSE` |
-| Adobe DNG SDK | Adobe DNG SDK License (BSD-style) | `third_party/skia/third_party/externals/dng_sdk/LICENSE` |
-| PIEX (Preview Image Extractor) | Apache-2.0 | `third_party/skia/third_party/externals/piex/LICENSE` |
+| Vulkan Memory Allocator (Linux slice only) | MIT | `third_party/skia/third_party/externals/vulkanmemoryallocator/LICENSE.txt` |
+| Vulkan headers (Linux slice; shipped in `headers/include/third_party/vulkan`) | Apache-2.0 OR MIT | header comments |
+
+Up to 150.x the pack also contained the Adobe DNG SDK and PIEX; from 157.1.0 on raw-photo
+(DNG) decoding is not built.
 
 The exact upstream commits of every bundled dependency are recorded per release
 in `pack.json` (`deps_externals`).
