@@ -14,7 +14,7 @@
 # not "on"): libicu.umapfile.o defines _uprv_mapFile and references
 # _UDataMemory_init (the MAP_NONE uprv_mapFile still clears its output with
 # it); Skia's and HarfBuzz's own file APIs are untouched — libskia.SkOSFile_posix.o references _fstat,
-# libskia.SkOSFile_stdio.o references _stat, harfbuzz.cc.o references _fstat.
+# libskia.SkOSFile_stdio.o references _stat, hb-blob.cc.o references _fstat.
 #
 # Every member above must be present; a name may occur more than once in the
 # archive (it does for umapfile/putil), and then every copy must be
@@ -40,7 +40,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/check_icu_no_file_io.XXXXXX")" || probe "mkte
 trap 'rm -rf "${WORK}"' EXIT
 
 UMAPFILE=libicu.umapfile.o PUTIL=libicu.putil.o
-SK_POSIX=libskia.SkOSFile_posix.o SK_STDIO=libskia.SkOSFile_stdio.o HB=harfbuzz.cc.o
+SK_POSIX=libskia.SkOSFile_posix.o SK_STDIO=libskia.SkOSFile_stdio.o HB=hb-blob.cc.o
 
 # search <file> <grep args…>: prints found|absent; any other grep status is a probe error.
 search() {

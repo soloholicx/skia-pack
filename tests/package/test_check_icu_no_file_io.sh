@@ -59,7 +59,7 @@ make_lib() {
     done
     echo "${dir}/out/libSkiaPack.a"
 }
-CONTROLS=(libskia.SkOSFile_posix.o=sk_posix libskia.SkOSFile_stdio.o=sk_stdio harfbuzz.cc.o=hb)
+CONTROLS=(libskia.SkOSFile_posix.o=sk_posix libskia.SkOSFile_stdio.o=sk_stdio hb-blob.cc.o=hb)
 # Like the real archives: umapfile and putil occur twice (identical copies), among unrelated members.
 ON="$(make_lib on other.o=nofile libicu.umapfile.o=umapfile_on libicu.putil.o=putil_on "${CONTROLS[@]}" libicu.umapfile.o=umapfile_on libicu.putil.o=putil_on)"
 OFF="$(make_lib off other.o=nofile libicu.umapfile.o=umapfile_off libicu.putil.o=putil_off "${CONTROLS[@]}" libicu.umapfile.o=umapfile_off libicu.putil.o=putil_off)"
@@ -71,10 +71,10 @@ NO_MAPFILE_DEF="$(make_lib no-mapfile-def libicu.umapfile.o=umapfile_nodef libic
 COPIES_DIFFER="$(make_lib copies-differ libicu.umapfile.o=umapfile_on libicu.putil.o=putil_on "${CONTROLS[@]}" libicu.umapfile.o=umapfile_off)"
 NO_UMAPFILE="$(make_lib no-umapfile libicu.putil.o=putil_on "${CONTROLS[@]}")"
 NO_PUTIL="$(make_lib no-putil libicu.umapfile.o=umapfile_on "${CONTROLS[@]}")"
-NO_SK_POSIX="$(make_lib no-sk-posix libicu.umapfile.o=umapfile_on libicu.putil.o=putil_on libskia.SkOSFile_stdio.o=sk_stdio harfbuzz.cc.o=hb)"
-SK_POSIX_NOFSTAT="$(make_lib sk-posix-nofstat libicu.umapfile.o=umapfile_on libicu.putil.o=putil_on libskia.SkOSFile_posix.o=nofile libskia.SkOSFile_stdio.o=sk_stdio harfbuzz.cc.o=hb)"
-SK_STDIO_NOSTAT="$(make_lib sk-stdio-nostat libicu.umapfile.o=umapfile_on libicu.putil.o=putil_on libskia.SkOSFile_posix.o=sk_posix libskia.SkOSFile_stdio.o=nofile harfbuzz.cc.o=hb)"
-HB_NOFSTAT="$(make_lib hb-nofstat libicu.umapfile.o=umapfile_on libicu.putil.o=putil_on libskia.SkOSFile_posix.o=sk_posix libskia.SkOSFile_stdio.o=sk_stdio harfbuzz.cc.o=nofile)"
+NO_SK_POSIX="$(make_lib no-sk-posix libicu.umapfile.o=umapfile_on libicu.putil.o=putil_on libskia.SkOSFile_stdio.o=sk_stdio hb-blob.cc.o=hb)"
+SK_POSIX_NOFSTAT="$(make_lib sk-posix-nofstat libicu.umapfile.o=umapfile_on libicu.putil.o=putil_on libskia.SkOSFile_posix.o=nofile libskia.SkOSFile_stdio.o=sk_stdio hb-blob.cc.o=hb)"
+SK_STDIO_NOSTAT="$(make_lib sk-stdio-nostat libicu.umapfile.o=umapfile_on libicu.putil.o=putil_on libskia.SkOSFile_posix.o=sk_posix libskia.SkOSFile_stdio.o=nofile hb-blob.cc.o=hb)"
+HB_NOFSTAT="$(make_lib hb-nofstat libicu.umapfile.o=umapfile_on libicu.putil.o=putil_on libskia.SkOSFile_posix.o=sk_posix libskia.SkOSFile_stdio.o=sk_stdio hb-blob.cc.o=nofile)"
 NO_HB="$(make_lib no-hb libicu.umapfile.o=umapfile_on libicu.putil.o=putil_on libskia.SkOSFile_posix.o=sk_posix libskia.SkOSFile_stdio.o=sk_stdio)"
 TRUNCATED="${WORK}/truncated.a"; head -c 2000 "${ON}" > "${TRUNCATED}"
 
