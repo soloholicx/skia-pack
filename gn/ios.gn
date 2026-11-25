@@ -14,8 +14,30 @@
 #   * skia_use_gl=false              — macOS has it on because rust-skia's
 #     desktop consumers need it; no iOS consumer uses OpenGL ES, and it would
 #     add a dependency on a deprecated framework.
-#   * extra_cflags carries -O3 and the HarfBuzz include (no
-#     -mmacosx-version-min).
+#   * extra_cflags carries -O3, the HarfBuzz include (no
+#     -mmacosx-version-min) and -DSK_METAL_WAIT_UNTIL_SCHEDULED. With it, GrMtlCommandBuffer::commit
+#     (src/gpu/ganesh/mtl/GrMtlCommandBuffer.mm, an iOS-only code path) calls
+#     waitUntilScheduled after a commit that does not wait for completion;
+#     synchronous commits still wait for completion, as before. Scope: only
+#     Skia's own Ganesh Metal command buffers whose commit succeeds (a buffer
+#     that ends in MTLCommandBufferStatusError is not counted as scheduled);
+#     command buffers the embedding app commits itself are not covered. This
+#     is not, on its own, a background-safety guarantee: the app must still
+#     stop submitting GPU work once it is inactive. scripts/verify.sh (k)
+#     checks the compiled objects: the call is in both iOS slices, not macOS.
+#   * -DUCONFIG_NO_FILE_IO=1 turns off ICU common's file access for data
+#     loading (umapfile.h: MAP_IMPLEMENTATION becomes MAP_NONE, so uprv_mapFile
+#     stats/maps nothing; putil.cpp stops reading ICU_DATA, and a directory set
+#     with u_setDataDirectory is recorded but no file is loaded from it). This
+#     is an iOS behaviour change: ICU data can no longer be loaded from files.
+#     The linked-in data (icudt78_dat) is used by default, and data handed over
+#     in memory (udata_setCommonData, udata_setAppData, the "open" functions
+#     that take a data pointer) is still supported. It removes ICU's own
+#     data-file loading only; Skia's and HarfBuzz's file APIs are unchanged.
+#     Passed through extra_cflags, so it reaches every target Skia's GN builds
+#     (it only has an effect where ICU's uconfig.h is included).
+#     scripts/verify.sh (l) checks the compiled objects (both iOS slices on,
+#     macOS off); gn/macos.gn must not define it.
 # Known quirk: for target_cpu="arm64" Skia's gn/skia/BUILD.gn passes BOTH
 # -arch arm64 and -arch arm64e, so the archives come out fat (arm64 + arm64e).
 # scripts/package.sh thins every archive to arm64 before merging; arm64e is
@@ -64,4 +86,4 @@ ios_use_simulator=false
 ios_min_target="17.0"
 skia_ios_use_signing=false
 skia_use_gl=false
-extra_cflags=["-O3","-I@HB_INCLUDE@"]
+extra_cflags=["-O3","-I@HB_INCLUDE@","-DSK_METAL_WAIT_UNTIL_SCHEDULED","-DUCONFIG_NO_FILE_IO=1"]

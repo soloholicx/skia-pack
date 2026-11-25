@@ -1,0 +1,27 @@
+# Minimal iOS app consuming the SkiaPack product the way an app does: statically,
+# through a package (tests/consumer's SkiaPackConsumerStatic product, which
+# depends on SkiaPack). scripts/verify_consumer.sh archives it (Release,
+# unsigned) and checks the archive's .app with scripts/check_privacy_carry.sh.
+# ConsumerApp.xcodeproj is generated from this file with XcodeGen and committed;
+# regenerate with `xcodegen generate` after editing.
+name: ConsumerApp
+options:
+  deploymentTarget:
+    iOS: "17.0"
+packages:
+  skia-pack-consumer:
+    path: ../consumer
+targets:
+  ConsumerApp:
+    type: application
+    platform: iOS
+    sources: [ConsumerApp]
+    dependencies:
+      - package: skia-pack-consumer
+        product: SkiaPackConsumerStatic
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.skia-pack.consumer-app
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        OTHER_LDFLAGS: ["-lc++"]

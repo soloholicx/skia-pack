@@ -23,7 +23,20 @@
 #       packaging stage; the smoke test LINKS as a consumer would, and the
 #       simulator build RUNS inside a booted simulator
 #   (i) gn/ios*.gn share every non-platform arg with gn/macos.gn verbatim
-#   (j) the tarball's skia-defines.txt differs from the one rust-skia's own
+#   (j) zip hygiene (scripts/check_zip.sh): the xcframework zip has no
+#       AppleDouble ._* / __MACOSX entries, and the tree plain unzip produces
+#       (what SwiftPM extracts) equals the tree ditto produces
+#   (k) SK_METAL_WAIT_UNTIL_SCHEDULED (scripts/check_wait_scheduled.sh, read
+#       from the objects): both iOS slices' GrMtlCommandBuffer::commit calls
+#       waitUntilScheduled, the macOS slice's does not; reverse check — the
+#       probe must REJECT 'on' for the macOS slice, so it is seen detecting
+#       absence on the very bytes under test
+#   (l) UCONFIG_NO_FILE_IO (scripts/check_icu_no_file_io.sh, read from the
+#       objects): both iOS slices have ICU's data-file loading compiled out,
+#       the macOS slice does not; gn/ios*.gn define the macro and gn/macos.gn
+#       does not; reverse check — probing the macOS slice for 'on' must return
+#       exactly 1 (rejected; 3 = probe error never counts)
+#   (m) the tarball's skia-defines.txt differs from the one rust-skia's own
 #       build writes only as gn/rust-skia/macos-arm64.allowed-diff.txt lists;
 #       the packaged headers include no non-public path that is not shipped
 #
@@ -57,6 +70,11 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 rm -rf "${VERIFY}"
 mkdir -p "${VERIFY}"
+
+# ---- (j) zip hygiene, before anything is extracted from it --------------------
+"${PACK_ROOT}/scripts/check_zip.sh" "${XCZIP}" || fail "zip(j): ${XCZIP} failed the zip hygiene check"
+echo "zip(j) PASS: no AppleDouble/__MACOSX entries; plain unzip tree == ditto tree"
+
 tar -xzf "${TARBALL}" -C "${VERIFY}"
 ditto -x -k "${XCZIP}" "${VERIFY}/xcframework"
 
@@ -118,16 +136,16 @@ merged_symbols="$(symbols_of "${LIB}/libSkiaPack.a")"
     || fail "audit(d): defined-symbol count ${merged_symbols} != input sum ${sum_symbols}"
 echo "audit(d) PASS: libSkiaPack.a = ${merged_members} members, ${merged_symbols} defined symbols (equals input sums)"
 
-# ---- (j) defines and header closure ------------------------------------------
-[[ -f "${PACKDIR}/skia-defines.txt" ]] || fail "defines(j): tarball has no skia-defines.txt"
+# ---- (m) defines and header closure ------------------------------------------
+[[ -f "${PACKDIR}/skia-defines.txt" ]] || fail "defines(m): tarball has no skia-defines.txt"
 python3 "${PACK_ROOT}/scripts/skia_defines.py" check macos-arm64 "${PACKDIR}/skia-defines.txt" \
-    || fail "defines(j): skia-defines.txt differs from rust-skia's in a way gn/rust-skia/macos-arm64.allowed-diff.txt does not list"
+    || fail "defines(m): skia-defines.txt differs from rust-skia's in a way gn/rust-skia/macos-arm64.allowed-diff.txt does not list"
 src_spellings="$(grep -rhoE '#[[:space:]]*include[[:space:]]+"(src|third_party|tools)/[^"]+"' "${PACKDIR}/headers" | sed -E 's/.*"(.*)"/\1/' | sort -u | tr '\n' ' ')"
 [[ "${src_spellings}" == "src/core/SkUTF.h src/skcms_public.h " ]] \
-    || fail "headers(j): packaged headers include non-public paths other than the two shipped ones: ${src_spellings}"
+    || fail "headers(m): packaged headers include non-public paths other than the two shipped ones: ${src_spellings}"
 [[ -f "${PACKDIR}/headers/src/core/SkUTF.h" && -f "${PACKDIR}/headers/modules/skcms/src/skcms_public.h" ]] \
-    || fail "headers(j): a non-public header the packaged tree includes is not shipped"
-echo "defines(j) PASS: skia-defines.txt matches rust-skia's except for the listed differences; header tree is closed"
+    || fail "headers(m): a non-public header the packaged tree includes is not shipped"
+echo "defines(m) PASS: skia-defines.txt matches rust-skia's except for the listed differences; header tree is closed"
 
 # ---- (e) smoke test, both artifact forms ------------------------------------
 FRAMEWORKS=(
@@ -305,6 +323,64 @@ for gn in ios ios-sim; do
     grep -qx 'skia_use_gl=false' "${PACK_ROOT}/gn/${gn}.gn" || fail "gn(i): gn/${gn}.gn must set skia_use_gl=false"
 done
 echo "gn(i) PASS: gn/ios.gn and gn/ios-sim.gn share every non-platform arg with gn/macos.gn"
+
+# ---- (k) SK_METAL_WAIT_UNTIL_SCHEDULED in the iOS slices, not in macOS ----------
+# Three-state searches: found (0) / absent (1) / error (anything else — fails).
+for gn in ios ios-sim; do
+    gn_rc=0; grep -qx 'extra_cflags=\[.*"-DSK_METAL_WAIT_UNTIL_SCHEDULED".*\]' "${PACK_ROOT}/gn/${gn}.gn" || gn_rc=$?
+    case "${gn_rc}" in
+        0) ;;
+        1) fail "wait(k): gn/${gn}.gn does not define SK_METAL_WAIT_UNTIL_SCHEDULED" ;;
+        *) fail "wait(k): searching gn/${gn}.gn failed (grep rc=${gn_rc})" ;;
+    esac
+done
+gn_rc=0; grep -q 'SK_METAL_WAIT_UNTIL_SCHEDULED' "${PACK_ROOT}/gn/macos.gn" || gn_rc=$?
+case "${gn_rc}" in
+    1) ;;
+    0) fail "wait(k): gn/macos.gn defines SK_METAL_WAIT_UNTIL_SCHEDULED" ;;
+    *) fail "wait(k): searching gn/macos.gn failed (grep rc=${gn_rc})" ;;
+esac
+for platform in "${PACK_IOS_PLATFORMS[@]}"; do
+    "${PACK_ROOT}/scripts/check_wait_scheduled.sh" "${XCROOT}/${platform}/libSkiaPack.a" on \
+        || fail "wait(k) ${platform}: GrMtlCommandBuffer::commit does not call waitUntilScheduled"
+done
+"${PACK_ROOT}/scripts/check_wait_scheduled.sh" "${XCROOT}/macos-arm64/libSkiaPack.a" off \
+    || fail "wait(k) macos-arm64: the macOS slice is expected without the macro"
+reverse_rc=0
+"${PACK_ROOT}/scripts/check_wait_scheduled.sh" "${XCROOT}/macos-arm64/libSkiaPack.a" on > "${VERIFY}/wait-reverse.log" 2>&1 || reverse_rc=$?
+# Only rc 1 is a rejection; rc 3 (probe error) must not stand in for one.
+[[ "${reverse_rc}" == "1" ]] \
+    || { cat "${VERIFY}/wait-reverse.log" >&2; fail "wait(k) reverse check: probing the macOS slice for 'on' returned rc=${reverse_rc}, want 1 (rejected; 3 = probe error)"; }
+echo "wait(k) PASS: both iOS slices call waitUntilScheduled from GrMtlCommandBuffer::commit; macOS does not; reverse check rejected 'on' for macOS"
+
+# ---- (l) UCONFIG_NO_FILE_IO in the iOS slices, not in macOS ---------------------
+# Three-state searches: found (0) / absent (1) / error (anything else — fails).
+for gn in ios ios-sim; do
+    gn_rc=0; grep -qx 'extra_cflags=\[.*"-DUCONFIG_NO_FILE_IO=1".*\]' "${PACK_ROOT}/gn/${gn}.gn" || gn_rc=$?
+    case "${gn_rc}" in
+        0) ;;
+        1) fail "icu(l): gn/${gn}.gn does not define UCONFIG_NO_FILE_IO=1" ;;
+        *) fail "icu(l): searching gn/${gn}.gn failed (grep rc=${gn_rc})" ;;
+    esac
+done
+gn_rc=0; grep -q 'UCONFIG_NO_FILE_IO' "${PACK_ROOT}/gn/macos.gn" || gn_rc=$?
+case "${gn_rc}" in
+    1) ;;
+    0) fail "icu(l): gn/macos.gn mentions UCONFIG_NO_FILE_IO" ;;
+    *) fail "icu(l): searching gn/macos.gn failed (grep rc=${gn_rc})" ;;
+esac
+for platform in "${PACK_IOS_PLATFORMS[@]}"; do
+    "${PACK_ROOT}/scripts/check_icu_no_file_io.sh" "${XCROOT}/${platform}/libSkiaPack.a" on \
+        || fail "icu(l) ${platform}: ICU's data-file loading is not compiled out"
+done
+"${PACK_ROOT}/scripts/check_icu_no_file_io.sh" "${XCROOT}/macos-arm64/libSkiaPack.a" off \
+    || fail "icu(l) macos-arm64: the macOS slice is expected with ICU's data-file loading"
+reverse_rc=0
+"${PACK_ROOT}/scripts/check_icu_no_file_io.sh" "${XCROOT}/macos-arm64/libSkiaPack.a" on > "${VERIFY}/icu-reverse.log" 2>&1 || reverse_rc=$?
+# Only rc 1 is a rejection; rc 3 (probe error) must not stand in for one.
+[[ "${reverse_rc}" == "1" ]] \
+    || { cat "${VERIFY}/icu-reverse.log" >&2; fail "icu(l) reverse check: probing the macOS slice for 'on' returned rc=${reverse_rc}, want 1 (rejected; 3 = probe error)"; }
+echo "icu(l) PASS: both iOS slices have ICU's data-file loading compiled out; macOS does not; reverse check rejected 'on' for macOS"
 
 echo
 if (( ${#SKIPPED[@]} > 0 )); then

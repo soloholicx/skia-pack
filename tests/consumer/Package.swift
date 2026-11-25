@@ -34,7 +34,11 @@ let package = Package(
     products: [
         // Dynamic on purpose: a static library product never runs the linker, and
         // the point is to LINK the binary target for every platform.
-        .library(name: "SkiaPackConsumer", type: .dynamic, targets: ["SkiaPackConsumer"])
+        .library(name: "SkiaPackConsumer", type: .dynamic, targets: ["SkiaPackConsumer"]),
+        // Linked statically into tests/consumer-app, the way an app consumes
+        // SkiaPack, so the archived .app shows whether SwiftPM put the privacy
+        // manifest's resource bundle in it.
+        .library(name: "SkiaPackConsumerStatic", targets: ["SkiaPackConsumer"]),
     ],
     dependencies: [dependency],
     targets: [
