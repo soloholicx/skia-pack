@@ -2,47 +2,88 @@
 # One arg per line. Lines starting with '#' are comments; scripts/build.sh
 # strips them and joins the rest into the --args string.
 #
-# Derived from gn/macos.gn: every arg below the marker is the macOS line
-# verbatim (scripts/verify.sh fails if the two drift), followed by the iOS
-# deltas:
+# Derived from gn/macos.gn: every arg below the marker is a macOS line
+# verbatim (scripts/verify.sh fails if the two drift; see gn/macos.gn for what
+# each one is for), followed by the iOS differences:
 #   * target_os="ios", ios_use_simulator=false
 #   * ios_min_target="17.0"          — the deployment target. Unlike macOS
 #     (where Skia hardcodes -target arm64-apple-macos11), Skia's iOS toolchain
 #     honours it: every object carries LC_BUILD_VERSION minos 17.0, which
 #     scripts/verify.sh asserts on the release bytes.
 #   * skia_ios_use_signing=false     — static archives only; nothing to sign.
-#   * extra_cflags carries only the HarfBuzz include (no -mmacosx-version-min).
+#   * skia_use_gl=false              — macOS has it on because rust-skia's
+#     desktop consumers need it; no iOS consumer uses OpenGL ES, and it would
+#     add a dependency on a deprecated framework.
+#   * extra_cflags carries -O3, the HarfBuzz include (no
+#     -mmacosx-version-min) and -DSK_METAL_WAIT_UNTIL_SCHEDULED. With it, GrMtlCommandBuffer::commit
+#     (src/gpu/ganesh/mtl/GrMtlCommandBuffer.mm, an iOS-only code path) calls
+#     waitUntilScheduled after a commit that does not wait for completion;
+#     synchronous commits still wait for completion, as before. Scope: only
+#     Skia's own Ganesh Metal command buffers whose commit succeeds (a buffer
+#     that ends in MTLCommandBufferStatusError is not counted as scheduled);
+#     command buffers the embedding app commits itself are not covered. This
+#     is not, on its own, a background-safety guarantee: the app must still
+#     stop submitting GPU work once it is inactive. scripts/verify.sh (k)
+#     checks the compiled objects: the call is in both iOS slices, not macOS.
+#   * -DUCONFIG_NO_FILE_IO=1 turns off ICU common's file access for data
+#     loading (umapfile.h: MAP_IMPLEMENTATION becomes MAP_NONE, so uprv_mapFile
+#     stats/maps nothing; putil.cpp stops reading ICU_DATA, and a directory set
+#     with u_setDataDirectory is recorded but no file is loaded from it). This
+#     is an iOS behaviour change: ICU data can no longer be loaded from files.
+#     The linked-in data (icudt78_dat) is used by default, and data handed over
+#     in memory (udata_setCommonData, udata_setAppData, the "open" functions
+#     that take a data pointer) is still supported. It removes ICU's own
+#     data-file loading only; Skia's and HarfBuzz's file APIs are unchanged.
+#     Passed through extra_cflags, so it reaches every target Skia's GN builds
+#     (it only has an effect where ICU's uconfig.h is included).
+#     scripts/verify.sh (l) checks the compiled objects (both iOS slices on,
+#     macOS off); gn/macos.gn must not define it.
 # Known quirk: for target_cpu="arm64" Skia's gn/skia/BUILD.gn passes BOTH
 # -arch arm64 and -arch arm64e, so the archives come out fat (arm64 + arm64e).
 # scripts/package.sh thins every archive to arm64 before merging; arm64e is
 # not shipped.
 # --- shared with gn/macos.gn (verbatim) ---
+is_skia_standalone=false
 is_official_build=true
-is_component_build=false
-target_cpu="arm64"
-skia_use_metal=true
-skia_use_harfbuzz=true
-skia_use_system_harfbuzz=true
-skia_use_icu=true
-skia_use_system_icu=false
+skia_use_partition_alloc=false
+is_debug=false
+skia_enable_svg=false
+skia_enable_ganesh=true
+skia_enable_graphite=false
+skia_enable_skottie=false
+skia_enable_pdf=true
+skia_use_egl=false
+skia_use_x11=false
 skia_use_system_libpng=false
 skia_use_system_zlib=false
-skia_use_system_libwebp=false
-skia_use_system_libjpeg_turbo=false
-skia_use_system_expat=false
-skia_use_freetype=false
-skia_use_fontconfig=false
-skia_use_x11=false
-skia_enable_skshaper=true
-skia_enable_skparagraph=true
-skia_enable_pdf=false
-skia_enable_tools=false
+skia_use_xps=false
+skia_use_libjpeg_turbo_decode=true
+skia_use_libjpeg_turbo_encode=true
 cc="clang"
 cxx="clang++"
+skia_use_metal=true
+skia_enable_skshaper=true
+skia_use_icu=true
+skia_use_system_icu=false
+skia_use_harfbuzz=true
+skia_pdf_subset_harfbuzz=true
+skia_enable_skparagraph=true
+skia_use_freetype=false
+skia_use_system_libjpeg_turbo=false
+skia_use_expat=true
+skia_use_system_expat=false
+target_cpu="arm64"
+skia_use_system_harfbuzz=true
+skia_use_system_libwebp=false
+skia_use_dng_sdk=false
+skia_use_fontconfig=false
+skia_enable_tools=false
+is_component_build=false
 extra_cflags_cc=["-std=c++20"]
-# --- iOS deltas ---
+# --- iOS differences ---
 target_os="ios"
 ios_use_simulator=false
 ios_min_target="17.0"
 skia_ios_use_signing=false
-extra_cflags=["-I@HB_INCLUDE@"]
+skia_use_gl=false
+extra_cflags=["-O3","-I@HB_INCLUDE@","-DSK_METAL_WAIT_UNTIL_SCHEDULED","-DUCONFIG_NO_FILE_IO=1"]

@@ -1,11 +1,11 @@
 // skia-pack smoke test — links the packaged artifact exactly as consumers do.
 //
 // Exercises the full text stack end-to-end:
-//   1. hb_version_string()  — proves the pack's standalone HarfBuzz 14.2 is
+//   1. hb_version_string()  — proves the pack's standalone HarfBuzz 14.5 is
 //      the HB that actually linked (and that <hb.h> resolves from headers/).
 //   2. skparagraph layout of a mixed-script line (Latin ligature + arrow +
-//      Arabic) — drives SkShaper's HarfBuzz path, SkUnicode/ICU, CoreText
-//      font manager.
+//      Arabic) — drives SkShaper's HarfBuzz path, SkUnicode/ICU, the
+//      platform font manager (CoreText on Apple, Fontconfig + FreeType on Linux).
 //   3. Raster draw — asserts non-background pixels were produced.
 //   4. PNG encode — exercises libpng/zlib. Pass an output path as argv[1] to
 //      keep the PNG for inspection.
@@ -27,7 +27,12 @@
 #include "include/core/SkString.h"
 #include "include/core/SkSurface.h"
 #include "include/encode/SkPngEncoder.h"
+#if defined(__APPLE__)
 #include "include/ports/SkFontMgr_mac_ct.h"
+#else
+#include "include/ports/SkFontMgr_fontconfig.h"
+#include "include/ports/SkFontScanner_FreeType.h"
+#endif
 #include "modules/skparagraph/include/FontCollection.h"
 #include "modules/skparagraph/include/Paragraph.h"
 #include "modules/skparagraph/include/ParagraphBuilder.h"
@@ -43,16 +48,24 @@ static int fail(const char* msg) {
 }
 
 int main(int argc, char** argv) {
-    // 1. HarfBuzz version — must be the pack's standalone 14.2.x.
+    // 1. HarfBuzz version — must be the pack's standalone 14.5.x, and the same
+    //    version the packaged <hb.h> declares.
     const char* hb = hb_version_string();
     std::printf("hb_version_string() = %s\n", hb);
-    if (std::strncmp(hb, "14.2", 4) != 0) {
-        return fail("expected HarfBuzz 14.2.x — wrong HB linked");
+    if (std::strncmp(hb, "14.5", 4) != 0) {
+        return fail("expected HarfBuzz 14.5.x — wrong HB linked");
+    }
+    if (std::strcmp(hb, HB_VERSION_STRING) != 0) {
+        return fail("linked HarfBuzz is not the version the packaged headers declare");
     }
 
     // 2. Shape + lay out a mixed-script paragraph.
+#if defined(__APPLE__)
     sk_sp<SkFontMgr> fontMgr = SkFontMgr_New_CoreText(nullptr);
-    if (!fontMgr) return fail("SkFontMgr_New_CoreText returned null");
+#else
+    sk_sp<SkFontMgr> fontMgr = SkFontMgr_New_FontConfig(nullptr, SkFontScanner_Make_FreeType());
+#endif
+    if (!fontMgr) return fail("the platform font manager could not be created");
 
     sk_sp<SkUnicode> unicode = SkUnicodes::ICU::Make();
     if (!unicode) return fail("SkUnicodes::ICU::Make returned null");

@@ -1,0 +1,8 @@
+# Differences between the pack's skia-defines.txt and the one rust-skia's own
+# build of the same Skia commit writes (the .defines.txt next to this file).
+# One per line:  "+ -DNAME  # reason"  the pack has it, rust-skia does not;
+#                "- -DNAME  # reason"  the other way round.
+# scripts/skia_defines.py check fails on any difference not listed here, and
+# on any line here that no longer applies.
++ -DSK_CODEC_DECODES_WEBP  # the pack keeps WebP decoding, as every earlier release had; rust-skia only with its "webp" feature
++ -DSK_CODEC_ENCODES_WEBP  # same, for encoding

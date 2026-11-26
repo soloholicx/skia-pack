@@ -17,12 +17,21 @@ bad() { echo "WRONG $*"; failures=$((failures + 1)); }
 new_sandbox() { # fresh origin + clone; sets SB, FAKE_GH, FAKE_ORIGIN
     SB="${ROOT}/sb-$1"; export FAKE_GH="${ROOT}/gh-$1" FAKE_ORIGIN="${ROOT}/origin-$1.git"
     mkdir -p "${SB}/scripts" "${FAKE_GH}/bin"
-    cp "${PACK_ROOT}/scripts/release.sh" "${SB}/scripts/"
+    cp "${PACK_ROOT}/scripts/release.sh" "${PACK_ROOT}/scripts/headers.sh" "${SB}/scripts/"
     cp "${PACK_ROOT}/Package.swift" "${PACK_ROOT}/pins.json" "${PACK_ROOT}/.gitignore" "${SB}/"
     echo "9.9.9" > "${SB}/VERSION"; echo "9.9.9" > "${FAKE_GH}/version"
     cp "${PACK_ROOT}/tests/release/fake_gh.sh" "${FAKE_GH}/bin/gh"; chmod +x "${FAKE_GH}/bin/gh"
-    for s in build verify; do printf '#!/usr/bin/env bash\necho "%s $*" >> "$FAKE_GH/build.log"\n' "$s" > "${SB}/scripts/$s.sh"; done
+    for s in build verify verify_rust_consumer; do printf '#!/usr/bin/env bash\necho "%s $*" >> "$FAKE_GH/build.log"\n' "$s" > "${SB}/scripts/$s.sh"; done
     printf '#!/usr/bin/env bash\necho "verify_consumer $*" >> "$FAKE_GH/build.log"\n' > "${SB}/scripts/verify_consumer.sh"
+    # Stands in for the candidate check: passes when a candidate is in place.
+    cat > "${SB}/scripts/fetch_linux_candidate.sh" <<'STUB'
+#!/usr/bin/env bash
+cd "$(dirname "${BASH_SOURCE[0]}")/.."; echo "fetch_linux_candidate $*" >> "$FAKE_GH/build.log"
+[[ -f artifacts/linux-candidate/RUN_ID && ! -f "$FAKE_GH/bad_candidate" ]] || exit 1
+[[ -f "$FAKE_GH/unattested_candidate" ]] && { rm -f artifacts/linux-candidate/ATTESTED; exit 0; }
+echo "$(cat artifacts/linux-candidate/RUN_ID) $(git rev-parse HEAD)" > artifacts/linux-candidate/ATTESTED
+STUB
+    mkdir -p "${SB}/artifacts/linux-candidate"; echo 4242 > "${SB}/artifacts/linux-candidate/RUN_ID"
     cat > "${SB}/scripts/package.sh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -30,9 +39,16 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."; echo "package" >> "$FAKE_GH/build.log"
 mkdir -p artifacts; n="$(grep -c '^package$' "$FAKE_GH/build.log")"
 echo "tarball bytes, packaging run $n" > artifacts/skia-pack-9.9.9-macos-arm64.tar.gz
 echo "zip bytes, packaging run $n" > artifacts/SkiaPack.xcframework.zip
+echo "linux bytes, packaging run $n" > artifacts/skia-pack-9.9.9-linux-x86_64.tar.gz
+# A real (tiny) headers archive: verify_published unpacks it and hashes the tree.
+rm -rf "$FAKE_GH/h"; mkdir -p "$FAKE_GH/h/skia-pack-9.9.9-skia-headers/include"
+echo "// packaging run $n" > "$FAKE_GH/h/skia-pack-9.9.9-skia-headers/include/a.h"
+tar -C "$FAKE_GH/h" -czf artifacts/skia-pack-9.9.9-skia-headers.tar.gz skia-pack-9.9.9-skia-headers
+( source scripts/headers.sh; headers_tree_sha256 "$FAKE_GH/h/skia-pack-9.9.9-skia-headers" ) > "$FAKE_GH/headers_tree"
 sha() { shasum -a 256 "$1" | awk '{print $1}'; }
-printf '{"version":"9.9.9","artifacts":{"macos-arm64-tarball":{"file":"skia-pack-9.9.9-macos-arm64.tar.gz","sha256":"%s"},"xcframework":{"file":"SkiaPack.xcframework.zip","sha256":"%s","spm_checksum":"%s"}}}\n' \
-    "$(sha artifacts/skia-pack-9.9.9-macos-arm64.tar.gz)" "$(sha artifacts/SkiaPack.xcframework.zip)" "$(swift package compute-checksum artifacts/SkiaPack.xcframework.zip)" > artifacts/pack.json
+printf '{"version":"9.9.9","skia":{"milestone":999},"harfbuzz":{"version":"9.9.9"},"artifacts":{"macos-arm64-tarball":{"file":"skia-pack-9.9.9-macos-arm64.tar.gz","sha256":"%s"},"xcframework":{"file":"SkiaPack.xcframework.zip","sha256":"%s","spm_checksum":"%s"},"linux-x86_64-tarball":{"file":"skia-pack-9.9.9-linux-x86_64.tar.gz","sha256":"%s"},"skia-headers":{"file":"skia-pack-9.9.9-skia-headers.tar.gz","sha256":"%s","tree_sha256":"%s"}}}\n' \
+    "$(sha artifacts/skia-pack-9.9.9-macos-arm64.tar.gz)" "$(sha artifacts/SkiaPack.xcframework.zip)" "$(swift package compute-checksum artifacts/SkiaPack.xcframework.zip)" \
+    "$(sha artifacts/skia-pack-9.9.9-linux-x86_64.tar.gz)" "$(sha artifacts/skia-pack-9.9.9-skia-headers.tar.gz)" "$(cat "$FAKE_GH/headers_tree")" > artifacts/pack.json
 STUB
     chmod +x "${SB}/scripts/"*.sh
     git init -q --bare "${FAKE_ORIGIN}"
@@ -57,7 +73,7 @@ expect_refused() { # expect_refused <label> <message fragment> [args…] — and
 }
 published_matches_frozen() {
     local f="${SB}/artifacts/release-9.9.9" n
-    for n in skia-pack-9.9.9-macos-arm64.tar.gz SkiaPack.xcframework.zip pack.json; do
+    for n in skia-pack-9.9.9-macos-arm64.tar.gz SkiaPack.xcframework.zip skia-pack-9.9.9-linux-x86_64.tar.gz skia-pack-9.9.9-skia-headers.tar.gz pack.json; do
         cmp -s "${f}/${n}" "${FAKE_GH}/assets/${n}" || return 1
     done
     local spm; spm="$(cd "${SB}" && swift package compute-checksum "${f}/SkiaPack.xcframework.zip")"
@@ -142,7 +158,7 @@ new_sandbox I
 run
 chmod -R u+w "${SB}/artifacts/release-9.9.9"
 ( cd "${SB}/artifacts/release-9.9.9" && echo "zip bytes, some other build" > SkiaPack.xcframework.zip \
-  && shasum -a 256 skia-pack-9.9.9-macos-arm64.tar.gz SkiaPack.xcframework.zip pack.json > SHA256SUMS )
+  && shasum -a 256 skia-pack-9.9.9-macos-arm64.tar.gz SkiaPack.xcframework.zip skia-pack-9.9.9-linux-x86_64.tar.gz skia-pack-9.9.9-skia-headers.tar.gz pack.json > SHA256SUMS )
 expect_refused "I  --resume from artifacts this version was not cut from" "does not name the frozen zip" --resume
 
 interrupted() { # a release stopped at a DRAFT with no assets; sets RELEASE_COMMIT
@@ -267,15 +283,37 @@ else bad "R  race: rcs='${rcs}' lock refusals=${locked} packs=$(packs)"; fi
 cp "${PACK_ROOT}/scripts/verify_published.sh" "${SB}/scripts/"
 printf '#!/usr/bin/env bash\necho "verify dir=${SKIA_PACK_VERIFY_ARTIFACTS_DIR:-UNSET}" >> "$FAKE_GH/build.log"\n' > "${SB}/scripts/verify.sh"
 before="$(cd "${SB}/artifacts" && find . -type f | sort | xargs shasum -a 256)"
-OUT="$( cd "${SB}" && PATH="${FAKE_GH}/bin:${PATH}" ./scripts/verify_published.sh 9.9.9 2>&1 )"; RC=$?
+OUT="$( cd "${SB}" && PATH="${FAKE_GH}/bin:${PATH}" SKIA_PACK_VERIFY_SKIP_RUST_CONSUMER=1 ./scripts/verify_published.sh 9.9.9 2>&1 )"; RC=$?
 after="$(cd "${SB}/artifacts" && find . -type f | sort | xargs shasum -a 256)"
 if [[ ${RC} -eq 0 && "${before}" == "${after}" ]] && ( cd "${SB}/artifacts/release-9.9.9" && shasum -a 256 -c SHA256SUMS >/dev/null 2>&1 ) \
    && grep -q "^verify dir=.*/build/verify-published/9.9.9$" "${FAKE_GH}/build.log"; then
     ok "P  verify_published: artifacts/ and the frozen set untouched; the gate read the downloaded copy"
 else bad "P  verify_published: rc=${RC} changed=$([[ "${before}" == "${after}" ]] && echo no || echo YES) $(echo "${OUT}" | tail -2)"; fi
+echo "foreign" > "${FAKE_GH}/assets/skia-pack-9.9.9-linux-x86_64.tar.gz"
+OUT="$( cd "${SB}" && PATH="${FAKE_GH}/bin:${PATH}" SKIA_PACK_VERIFY_SKIP_RUST_CONSUMER=1 ./scripts/verify_published.sh 9.9.9 2>&1 )"; RC=$?
+[[ ${RC} -ne 0 && "${OUT}" == *"linux tarball name/sha256 mismatch"* ]] && ok "P  verify_published: a published Linux tarball that is not the one pack.json records fails" || bad "P  tampered published linux tarball: rc=${RC} $(echo "${OUT}" | tail -2)"
 echo "foreign" > "${FAKE_GH}/assets/SkiaPack.xcframework.zip"
 OUT="$( cd "${SB}" && PATH="${FAKE_GH}/bin:${PATH}" ./scripts/verify_published.sh 9.9.9 2>&1 )"; RC=$?
 [[ ${RC} -ne 0 && "${OUT}" == *"Package.swift checksum does not match"* ]] && ok "P  verify_published: a published zip that is not the committed checksum fails" || bad "P  tampered published zip: rc=${RC}"
+
+# ---- S. the Linux slice candidate ------------------------------------------------------------------------
+new_sandbox S
+rm -rf "${SB}/artifacts/linux-candidate"
+expect_refused "S  no linux-x86_64 candidate" "no linux-x86_64 candidate"
+expect_refused "S  --check reports the missing candidate too" "no linux-x86_64 candidate" --check
+mkdir -p "${SB}/artifacts/linux-candidate"; echo 4242 > "${SB}/artifacts/linux-candidate/RUN_ID"
+touch "${FAKE_GH}/bad_candidate"
+expect_refused "S  a candidate that fails its check (other commit, failed run, wrong bytes)" "is not a slice of"
+rm "${FAKE_GH}/bad_candidate"; touch "${FAKE_GH}/unattested_candidate"
+expect_refused "S  a candidate whose run was not asked about (local trial build)" "not attested"
+rm "${FAKE_GH}/unattested_candidate"
+echo "4242 0000000000000000000000000000000000000000" > "${SB}/artifacts/linux-candidate/ATTESTED"
+SKIA_PACK_LINUX_CANDIDATE_SKIP_RUN_CHECK=1 SKIA_PACK_WITHOUT_LINUX=1 run
+if [[ ${RC} -eq 0 ]] && published_matches_frozen && [[ "$(packs)" == 1 ]] \
+   && grep -q '^fetch_linux_candidate --check$' "${FAKE_GH}/build.log" \
+   && grep -q '^verify_rust_consumer ' "${FAKE_GH}/build.log"; then
+    ok "S  with a checked candidate the release runs; the candidate was re-checked and the Rust consumer gate ran"
+else bad "S  release with candidate: rc=${RC} packs=$(packs) $(echo "${OUT}" | tail -3)"; fi
 
 echo
 if [[ ${failures} -eq 0 ]]; then echo "[test_release] ALL CASES PASSED"; else echo "[test_release] ${failures} CASE(S) WRONG"; fi

@@ -2,43 +2,79 @@
 # One arg per line. Lines starting with '#' are comments; scripts/build.sh
 # strips them and joins the rest into the --args string.
 #
-# Baseline: the byte-identical production GN line shared by slate-kit and
-# term-kit (m150 official static build, Metal + HarfBuzz + ICU).
-# Pack deltas (validated by the HB-UNIFY spike, 2026-07-08):
-#   * skia_use_system_harfbuzz=true  — Skia archives carry hb_* as UNDEFINED
-#     symbols; the pack's standalone HarfBuzz 14.2 archive is the one definer.
-#   * extra_cflags -I@HB_INCLUDE@    — @HB_INCLUDE@ is substituted by build.sh
-#     with the absolute path to third_party/harfbuzz/src ("system" HB wiring
-#     without any system pkg-config).
-#   * extra_cflags -mmacosx-version-min=14.0 — pin the deployment target the
-#     kits' own TUs already use. Known quirk: Skia's gn/skia/BUILD.gn
-#     unconditionally appends "-target arm64-apple-macos11", which overrides
-#     this flag (clang warns). Effective Skia object min is macOS 11 — same as
-#     both kits' production builds and safe to link into 14.0 consumers; the
-#     flag is kept for the day Skia drops the hardcoded -target.
-#   * skia_enable_pdf=false          — neither kit uses SkPDF; keeps hb-subset
-#     out of Skia's link surface.
+# Since 157.1.0 the same archives serve two kinds of consumer: C++ code
+# (CMake / SwiftPM) and rust-skia 0.157.0 binding to them instead of building
+# its own Skia (skia-bindings "bind against system Skia"; one Skia per
+# process, term-kit ADR-0013). The args are therefore
+#
+#     the set rust-skia generates for the features
+#     gl, metal, pdf, textlayout, embed-icudtl
+#   + the pack's own differences, each listed below.
+#
+# scripts/skia_defines.py compares the preprocessor defines this build ends
+# up with against the ones rust-skia's own build produced
+# (gn/rust-skia/macos-arm64.defines.txt); every difference must be in the
+# allowed list next to it (macos-arm64.allowed-diff.txt).
+
+# ---- rust-skia's set, verbatim (skia-bindings 0.157.0, macOS arm64) --------
+is_skia_standalone=false
 is_official_build=true
-is_component_build=false
-target_cpu="arm64"
-skia_use_metal=true
-skia_use_harfbuzz=true
-skia_use_system_harfbuzz=true
-skia_use_icu=true
-skia_use_system_icu=false
+skia_use_partition_alloc=false
+is_debug=false
+skia_enable_svg=false
+skia_enable_ganesh=true
+skia_enable_graphite=false
+skia_enable_skottie=false
+skia_enable_pdf=true
+skia_use_gl=true
+skia_use_egl=false
+skia_use_x11=false
 skia_use_system_libpng=false
 skia_use_system_zlib=false
-skia_use_system_libwebp=false
-skia_use_system_libjpeg_turbo=false
-skia_use_system_expat=false
-skia_use_freetype=false
-skia_use_fontconfig=false
-skia_use_x11=false
-skia_enable_skshaper=true
-skia_enable_skparagraph=true
-skia_enable_pdf=false
-skia_enable_tools=false
+skia_use_xps=false
+skia_use_libjpeg_turbo_decode=true
+skia_use_libjpeg_turbo_encode=true
 cc="clang"
 cxx="clang++"
+skia_use_metal=true
+skia_enable_skshaper=true
+skia_use_icu=true
+skia_use_system_icu=false
+skia_use_harfbuzz=true
+skia_pdf_subset_harfbuzz=true
+skia_enable_skparagraph=true
+skia_use_freetype=false
+skia_use_system_libjpeg_turbo=false
+skia_use_expat=true
+skia_use_system_expat=false
+target_os="mac"
+target_cpu="arm64"
+
+# ---- pack differences ------------------------------------------------------
+# 1. HarfBuzz. rust-skia: skia_use_system_harfbuzz=false (Skia compiles its
+#    bundled copy into libharfbuzz.a). Pack: true — Skia's archives carry hb_*
+#    as UNDEFINED symbols and the pack's standalone HarfBuzz archive is the one
+#    definer (same commit Skia's DEPS pins; built with CoreText and with the
+#    subset API SkPDF needs). -I@HB_INCLUDE@ is substituted by build.sh with
+#    the absolute path to third_party/harfbuzz/src.
+skia_use_system_harfbuzz=true
+# 2. Image codecs. rust-skia turns WebP off unless its "webp" feature is on;
+#    the pack keeps WebP decode and encode (vendored), as every earlier
+#    release had. DNG (raw photos) is off, as in rust-skia: the fork's DEPS
+#    does not carry dng_sdk and piex. Earlier releases had it on.
+skia_use_system_libwebp=false
+skia_use_dng_sdk=false
+# 3. Font back ends. Not in rust-skia's macOS set (Skia defaults); spelled out
+#    as before.
+skia_use_fontconfig=false
+# 4. Not built at all.
+skia_enable_tools=false
+is_component_build=false
+# 5. Language level and deployment target. rust-skia passes
+#    extra_cflags=["-O3","--target=aarch64-apple-darwin"]; the pack keeps its
+#    C++20 and macOS 14.0 flags. Known quirk: Skia's gn/skia/BUILD.gn
+#    unconditionally appends "-target arm64-apple-macos11", which overrides
+#    -mmacosx-version-min (clang warns). Effective Skia object min is macOS 11,
+#    safe to link into 14.0 consumers.
 extra_cflags_cc=["-std=c++20"]
-extra_cflags=["-I@HB_INCLUDE@","-mmacosx-version-min=14.0"]
+extra_cflags=["-O3","-I@HB_INCLUDE@","-mmacosx-version-min=14.0"]

@@ -20,15 +20,20 @@
 #                     or published) and no frozen artifacts. An existing
 #                     version is REFUSED — a plain re-run can only ever be a
 #                     mistake (it would mint new bytes for an old checksum).
-#   1. build + package + verify + consumer check     (once)
-#   2. freeze         copy the three assets + SHA256SUMS to
+#                     The linux-x86_64 slice candidate is in place: this
+#                     machine cannot build it, so it comes from a successful
+#                     build-linux workflow run ON THIS COMMIT, fetched first
+#                     with scripts/fetch_linux_candidate.sh <run-id> and
+#                     re-checked here (the run is asked about again).
+#   1. build + package + verify + consumer check + Rust consumer check (once)
+#   2. freeze         copy the five assets + SHA256SUMS to
 #                     artifacts/release-<version>/ (read-only). Everything
 #                     after this point reads ONLY from there.
 #   3. commit         release URL + spm checksum of the frozen zip into
 #                     Package.swift; push main. No tag yet.
 #   4. draft release  targeting that commit; upload the frozen assets;
 #                     download every asset back and compare sha256.
-#   5. publish        only when all three assets match. Publishing is what
+#   5. publish        only when all five assets match. Publishing is what
 #                     creates the tag (== version string), so consumers can
 #                     never resolve a tag whose asset is not there yet, and an
 #                     aborted release leaves no tag behind.
@@ -80,7 +85,8 @@ PACK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="$(tr -d '[:space:]' < "${PACK_ROOT}/VERSION")"
 ARTIFACTS="${PACK_ROOT}/artifacts"
 FROZEN="${ARTIFACTS}/release-${VERSION}"
-ASSETS=("skia-pack-${VERSION}-macos-arm64.tar.gz" "SkiaPack.xcframework.zip" "pack.json")
+ASSETS=("skia-pack-${VERSION}-macos-arm64.tar.gz" "SkiaPack.xcframework.zip"
+        "skia-pack-${VERSION}-linux-x86_64.tar.gz" "skia-pack-${VERSION}-skia-headers.tar.gz" "pack.json")
 REPO_URL="https://github.com/soloholicx/skia-pack"
 RELEASE_URL="${REPO_URL}/releases/download/${VERSION}/SkiaPack.xcframework.zip"
 RELEASE_BRANCH="main"
@@ -185,6 +191,15 @@ if [[ "${MODE}" == "new" ]]; then
         || refuse "a ${state} GitHub release ${VERSION} already exists — to continue an interrupted release use --resume; otherwise bump VERSION"
     [[ ! -e "${FROZEN}" && ! -e "${STATE_FILE}" ]] \
         || refuse "frozen artifacts for ${VERSION} already exist at ${FROZEN} — use --resume to continue that release; delete them only if you are certain nothing was ever uploaded"
+    # The Linux slice: a candidate of a build-linux run on THIS commit, asked
+    # about again now. The two escape hatches of the local loop are not honoured.
+    unset SKIA_PACK_LINUX_CANDIDATE_SKIP_RUN_CHECK SKIA_PACK_WITHOUT_LINUX
+    [[ -f "${ARTIFACTS}/linux-candidate/RUN_ID" ]] \
+        || refuse "no linux-x86_64 candidate (${ARTIFACTS}/linux-candidate) — run the build-linux workflow on ${head_commit:0:7}, then scripts/fetch_linux_candidate.sh <run-id>"
+    ./scripts/fetch_linux_candidate.sh --check >/dev/null \
+        || refuse "the linux-x86_64 candidate is not a slice of ${head_commit:0:7} built by a successful build-linux run (scripts/fetch_linux_candidate.sh --check)"
+    [[ "$(cat "${ARTIFACTS}/linux-candidate/ATTESTED" 2>/dev/null)" == "$(cat "${ARTIFACTS}/linux-candidate/RUN_ID") ${head_commit}" ]] \
+        || refuse "the linux-x86_64 candidate is not attested for ${head_commit:0:7}"
 else
     verify_frozen
     frozen_spm="$(swift package compute-checksum "${FROZEN}/SkiaPack.xcframework.zip")"
@@ -242,6 +257,9 @@ if [[ "${MODE}" == "new" ]]; then
     ./scripts/package.sh
     ./scripts/verify.sh
     ./scripts/verify_consumer.sh local
+    # One Skia per process, macOS side, on the packaged bytes (the Linux side
+    # ran in the build-linux run the candidate comes from).
+    ./scripts/verify_rust_consumer.sh "build/verify/skia-pack-${VERSION}-macos-arm64" "artifacts/skia-pack-${VERSION}-skia-headers"
 
     # ----------------------------------------------------------- 2. freeze ----
     [[ -z "$(git status --porcelain)" ]] || refuse "the build dirtied the working tree"
@@ -291,7 +309,7 @@ if [[ "${REL_STATE}" == "none" ]]; then
     # published; no tag exists until then.
     gh release create "${VERSION}" --draft --target "${release_commit}" \
         --title "skia-pack ${VERSION}" \
-        --notes "Prebuilt Skia m150 (@$(sed -n 's/.*"commit": "\([0-9a-f]\{7\}\).*/\1/p' pins.json | head -1)) + HarfBuzz 14.2.0 static artifacts: macOS arm64 (tarball + xcframework slice), iOS arm64 and iOS Simulator arm64 (xcframework slices; simulator on Apple Silicon hosts only). See pack.json for the full manifest."
+        --notes "Prebuilt Skia m$(python3 -c "import json; print(json.load(open('${FROZEN}/pack.json'))['skia']['milestone'])") (@$(sed -n 's/.*"commit": "\([0-9a-f]\{7\}\).*/\1/p' pins.json | head -1)) + HarfBuzz $(python3 -c "import json; print(json.load(open('${FROZEN}/pack.json'))['harfbuzz']['version'])") static artifacts: macOS arm64 (tarball + xcframework slice), iOS arm64 and iOS Simulator arm64 (xcframework slices; simulator on Apple Silicon hosts only), Linux x86_64 (tarball), and Skia's headers for rust-skia to bind to a slice. See pack.json for the full manifest."
     query_release
     [[ "${REL_STATE}" == "draft" ]] || refuse "the release just created is '${REL_STATE}', expected a draft"
     state_set release_id "${REL_ID}"
@@ -372,7 +390,7 @@ else
         refuse "could not get ${name} onto the draft with the frozen bytes — fix the cause and run release.sh --resume"
     }
     for name in "${ASSETS[@]}"; do upload_asset "${name}"; done
-    # Final read-back of all three before anything becomes public.
+    # Final read-back of every asset before anything becomes public.
     require_draft "final read-back"
     for name in "${ASSETS[@]}"; do
         has_asset "${name}" && [[ "$(remote_sha "${name}")" == "$(sha_of "${FROZEN}/${name}")" ]] \

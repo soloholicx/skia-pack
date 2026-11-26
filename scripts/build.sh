@@ -4,10 +4,11 @@
 #      clones + Skia DEPS externals; no-op when already at the pins)
 #   2. standalone HarfBuzz static archive (scripts/build_harfbuzz.sh)
 #   3. gn gen with args from the platform's gn file (system-HB wired at the
-#      pack's own HarfBuzz 14.2 headers) + ninja
+#      pack's own HarfBuzz headers) + ninja
+#   4. skia-defines.txt in the output directory (scripts/skia_defines.py)
 #
 # usage: build.sh [platform]   platform = macos-arm64 (default) | ios-arm64 |
-#                              ios-arm64-simulator   (scripts/platform.sh)
+#                              ios-arm64-simulator | linux-x86_64   (scripts/platform.sh)
 #
 # Output: build/skia/Release-<platform>/*.a  (the Skia archive set; with
 # system-HB Skia produces NO libharfbuzz.a of its own — package.sh copies the
@@ -23,6 +24,10 @@ PLATFORM="${1:-macos-arm64}"
 # shellcheck source=scripts/platform.sh
 source "${PACK_ROOT}/scripts/platform.sh"
 pack_platform_init "${PACK_ROOT}" "${PLATFORM}"
+if [[ "${PACK_HOST_CAN_BUILD}" != "1" ]]; then
+    echo "error: ${PLATFORM} cannot be built on $(uname -s)" >&2
+    exit 1
+fi
 OUT_DIR="${PACK_SKIA_OUT}"
 GN_ARGS_FILE="${PACK_ROOT}/${PACK_GN_FILE}"
 
@@ -45,6 +50,9 @@ gn_args="$(grep -v '^[[:space:]]*#' "${GN_ARGS_FILE}" | grep -v '^[[:space:]]*$'
 
 ./bin/gn gen "${OUT_DIR}" --args="${gn_args}"
 ninja -C "${OUT_DIR}" skia skshaper skparagraph
+
+# 4. The defines the build used, for consumers that bind rust-skia to the pack.
+python3 "${PACK_ROOT}/scripts/skia_defines.py" write "${OUT_DIR}"
 
 echo "[skia] built: ${OUT_DIR}"
 ls "${OUT_DIR}"/*.a
