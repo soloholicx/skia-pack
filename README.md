@@ -106,8 +106,23 @@ covers the iOS slices only (the macOS slice has not been audited for it).
 |---|---|---|
 | `NSPrivacyAccessedAPICategoryFileTimestamp` | `C617.1`, `3B52.1` | Skia and HarfBuzz call `stat`/`fstat` on files whose paths the app passes in (fonts, images, data). |
 
-System boot time is not declared: it was for the DNG SDK's timer, which m157 slices do not
-carry (`skia_use_dng_sdk=false`).
+**System boot time is not declared.** The old reason (`35F9.1`) was for the DNG SDK's timer,
+which m157 slices do not carry (`skia_use_dng_sdk=false`). Neither iOS slice of 157.1.0 references
+the APIs Apple lists for this category (`systemUptime`, `mach_absolute_time()`). Four archive
+members call `std::chrono::steady_clock::now()`, which is not on that list:
+
+* `GrDirectContext`, `GrResourceCache` and `GrThreadSafeCache` use time differences to purge
+  GPU resources that have not been used for a while;
+* `SkTime` returns the clock value itself. Two callers in the archive use it:
+  * `SkPDFMetadata::CreateUUID` mixes it with other inputs into the identifier of a PDF/A
+    document. It is called only when `fPDFA` is set, so other PDFs do not get it. The identifier
+    is derived from the reading; it does not contain the raw uptime.
+  * `SkXMLParser` seeds an in-process hash salt with it.
+
+On Apple platforms, upstream LLVM libc++ implements `steady_clock::now()` with
+`clock_gettime(CLOCK_MONOTONIC_RAW)`. That comes from upstream source; it was not measured on each
+iOS system library. This conclusion is an engineering judgement on the 157.1.0 slices. It is not
+an App Store review outcome, and it needs a new review if these call sites or Apple's list change.
 
 **Path contract.** The file-timestamp reasons hold only for these paths, and keeping to them
 is the **calling app's** responsibility — skia-pack does not enforce it at run time:
