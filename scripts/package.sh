@@ -283,7 +283,20 @@ pathlib.Path(out_path).write_text(json.dumps(manifest, indent=2) + "\n")
 PY
 
 # ---------------------------------------------------------------- tarball ----
-tar -C "${ARTIFACTS}" -czf "${TARBALL}" "${STAGE_NAME}"
+# pack_tar <tarball> <dir-name>: tar ${ARTIFACTS}/<dir-name> with NO host
+# metadata. macOS bsdtar otherwise writes an AppleDouble "._*" member for every
+# file with an extended attribute (com.apple.provenance is on all of them) plus
+# LIBARCHIVE./SCHILY.xattr pax headers; a Mac folds those back in on extract,
+# GNU tar extracts them as files (157.1.0 shipped 1,925 + 621 of them).
+# COPYFILE_DISABLE=1 alone drops the "._*" members but keeps the pax headers.
+# The result is then checked member by member (scripts/check_tar.sh) against
+# the directory it was made from.
+pack_tar() {
+    tar --no-mac-metadata --no-xattrs --no-acls --no-fflags -C "${ARTIFACTS}" -czf "$1" "$2"
+    "${PACK_ROOT}/scripts/check_tar.sh" "$1" "$2" --reference "${ARTIFACTS}/$2" \
+        || { echo "error: $1 failed the tar hygiene check" >&2; exit 1; }
+}
+pack_tar "${TARBALL}" "${STAGE_NAME}"
 
 # ------------------------------------------------------------- xcframework ----
 xcodebuild -create-xcframework \
@@ -301,7 +314,9 @@ ditto -c -k --norsrc --noextattr --keepParent "${XCFRAMEWORK}" "${XCZIP}"
 # ------------------------------------------------- skia-headers (rust-skia) ----
 stage_bind_headers "${ARTIFACTS}/${HEADERS_STAGE_NAME}"
 headers_tree="$(headers_tree_sha256 "${ARTIFACTS}/${HEADERS_STAGE_NAME}")"
-tar -C "${ARTIFACTS}" -czf "${HEADERS_TARBALL}" "${HEADERS_STAGE_NAME}"
+# pack_tar also proves the tree extracted from the final archive hashes to
+# ${headers_tree}, the value pack.json records.
+pack_tar "${HEADERS_TARBALL}" "${HEADERS_STAGE_NAME}"
 headers_sha256="$(shasum -a 256 "${HEADERS_TARBALL}" | awk '{print $1}')"
 
 # ------------------------------------------------------------ Linux slice ----

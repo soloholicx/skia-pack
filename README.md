@@ -12,7 +12,7 @@ upstream `chrome/m157` plus the commits rust-skia carries on top of it.
 
 ## What a release contains
 
-Each release tag (`157.1.0` = `SK_MILESTONE.PACK.PATCH`) ships five immutable assets:
+Each release tag (`157.1.1` = `SK_MILESTONE.PACK.PATCH`) ships five immutable assets:
 
 | Asset | Consumer | Contents |
 |---|---|---|
@@ -21,6 +21,16 @@ Each release tag (`157.1.0` = `SK_MILESTONE.PACK.PATCH`) ships five immutable as
 | `SkiaPack.xcframework.zip` | SwiftPM | three slices — `macos-arm64`, `ios-arm64`, `ios-arm64-simulator` — each `libSkiaPack.a` + `Headers/` (same layout, one shared header tree). The zip carries no AppleDouble `._*` entries (`scripts/check_zip.sh`) |
 | `skia-pack-<ver>-skia-headers.tar.gz` | Cargo | Skia's headers, public and private, no sources — what rust-skia needs as `SKIA_SOURCE_DIR`. One tree for all slices. |
 | `pack.json` | humans/CI | fully resolved manifest: Skia/HarfBuzz commits, GN args hash, deps externals, toolchain, artifact checksums |
+
+**157.1.1: tarballs without host metadata.** The two tarballs made on the Mac in
+157.1.0 (`macos-arm64` and `skia-headers`) carry an AppleDouble `._*` member and
+xattr pax headers for every entry. A Mac's tar folds these back in on extract; GNU
+tar writes them out as extra files, so the published Linux verification of 157.1.0
+failed on the `skia-headers` tree. 157.1.1 is the same Skia, HarfBuzz, GN args and
+sources, packaged without host metadata, and the release gate now rejects any
+tarball that carries it (`scripts/check_tar.sh`, `verify.sh` (n)). 157.1.0 stays
+published and unchanged; use 157.1.1, in particular for the `skia-headers` archive
+on Linux.
 
 The `headers/` tree is anchored so **one** `-I <pack>/headers` resolves every existing
 include spelling: `#include "include/core/SkCanvas.h"`,
@@ -147,7 +157,7 @@ not import them, and the product name, the headers, the frameworks and the linke
 the same as before:
 
 ```swift
-.package(url: "https://github.com/soloholicx/skia-pack.git", exact: "157.1.0"),
+.package(url: "https://github.com/soloholicx/skia-pack.git", exact: "157.1.1"),
 // …
 .target(name: "YourCore",
         dependencies: [.product(name: "SkiaPack", package: "skia-pack")])
@@ -155,7 +165,7 @@ the same as before:
 
 **CMake** — download the tarball pinned by your repo's `skia-pack.lock`
 (see slate-kit's `cmake/SkiaPack.cmake`), or point at a local build:
-`-DSLATE_SKIA_PREBUILT_DIR=<skia-pack>/artifacts/skia-pack-157.1.0-macos-arm64`.
+`-DSLATE_SKIA_PREBUILT_DIR=<skia-pack>/artifacts/skia-pack-157.1.1-macos-arm64`.
 On Linux also link `-lfontconfig -lfreetype`, and put the archives in a
 `-Wl,--start-group … -Wl,--end-group` (they reference each other).
 
@@ -196,8 +206,9 @@ the gate is what keeps it honest for the pinned versions.
 SKIA_PACK_WITHOUT_LINUX=1 ./scripts/package.sh   # tarball + three-slice xcframework + skia-headers + pack.json
 ./scripts/verify.sh                     # symbol audits, defines, per-slice checks, smoke tests
 ./scripts/verify_consumer.sh local      # tests/consumer via SwiftPM: macOS run, iOS + simulator link
-./scripts/verify_rust_consumer.sh build/verify/skia-pack-<ver>-macos-arm64 artifacts/skia-pack-<ver>-skia-headers
+./scripts/verify_rust_consumer.sh build/verify/skia-pack-<ver>-macos-arm64 build/verify/skia-headers/skia-pack-<ver>-skia-headers
 tests/package/test_check_zip.sh         # self-tests of the zip-hygiene and SK_METAL_WAIT_UNTIL_SCHEDULED probes
+tests/package/test_check_tar.sh         # self-tests of the tar-hygiene gate (scripts/check_tar.sh)
 tests/package/test_check_wait_scheduled.sh
 tests/package/test_check_icu_no_file_io.sh # self-test of the UCONFIG_NO_FILE_IO probe (verify.sh (l))
 tests/package/test_check_privacy_carry.sh # self-test of the privacy-manifest carry checker (test-only fixture)

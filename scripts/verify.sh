@@ -39,6 +39,15 @@
 #   (m) the tarball's skia-defines.txt differs from the one rust-skia's own
 #       build writes only as gn/rust-skia/macos-arm64.allowed-diff.txt lists;
 #       the packaged headers include no non-public path that is not shipped
+#   (n) tar hygiene (scripts/check_tar.sh), before either tar is extracted:
+#       the macOS tarball and the skia-headers archive have no AppleDouble
+#       ._* member and no xattr/ACL/flags pax header, only regular files and
+#       directories under their one root, nothing that collides on APFS; the
+#       standalone pack.json in the same directory names both archives by
+#       sha256; the skia-headers tree extracted WITHOUT AppleDouble merging
+#       hashes to pack.json's tree_sha256 (it is left in build/verify/
+#       skia-headers for the Rust consumer gate); the system tar's extraction
+#       of the macOS tarball equals the non-merging one
 #
 # The simulator run needs a booted simulator: SKIA_PACK_SIM_UDID=<udid>, or
 # any booted device. With none, verify FAILS — set
@@ -58,6 +67,9 @@ STAGE_NAME="skia-pack-${VERSION}-${PLATFORM}"
 ARTIFACTS_DIR="${SKIA_PACK_VERIFY_ARTIFACTS_DIR:-${PACK_ROOT}/artifacts}"
 TARBALL="${ARTIFACTS_DIR}/${STAGE_NAME}.tar.gz"
 XCZIP="${ARTIFACTS_DIR}/SkiaPack.xcframework.zip"
+HEADERS_STAGE_NAME="skia-pack-${VERSION}-skia-headers"
+HEADERS_TARBALL="${ARTIFACTS_DIR}/${HEADERS_STAGE_NAME}.tar.gz"
+MANIFEST="${ARTIFACTS_DIR}/pack.json"
 VERIFY="${PACK_ROOT}/build/verify"
 # shellcheck source=scripts/platform.sh
 source "${PACK_ROOT}/scripts/platform.sh"
@@ -75,8 +87,43 @@ mkdir -p "${VERIFY}"
 "${PACK_ROOT}/scripts/check_zip.sh" "${XCZIP}" || fail "zip(j): ${XCZIP} failed the zip hygiene check"
 echo "zip(j) PASS: no AppleDouble/__MACOSX entries; plain unzip tree == ditto tree"
 
+# ---- (n) tar hygiene, before anything is extracted from them -----------------
+# Both tars and the standalone pack.json come from ${ARTIFACTS_DIR} — the bytes
+# under test — never from artifacts/ when another directory is named.
+[[ -f "${HEADERS_TARBALL}" ]] || fail "tar(n): missing ${HEADERS_TARBALL}"
+[[ -f "${MANIFEST}" ]]        || fail "tar(n): missing ${MANIFEST}"
+"${PACK_ROOT}/scripts/check_tar.sh" "${TARBALL}" "${STAGE_NAME}" --extract-to "${VERIFY}/tar-check/macos" \
+    || fail "tar(n): ${TARBALL} failed the tar hygiene check"
+want_tree="$(python3 - "${MANIFEST}" "${TARBALL}" "${HEADERS_TARBALL}" "${VERSION}" <<'PY'
+import hashlib, json, os, sys
+manifest, tarball, headers, version = sys.argv[1:5]
+m = json.load(open(manifest))
+sha = lambda p: hashlib.sha256(open(p, "rb").read()).hexdigest()
+a = m.get("artifacts") or {}
+t, h = a.get("macos-arm64-tarball") or {}, a.get("skia-headers") or {}
+errors = []
+if m.get("version") != version: errors.append(f"version {m.get('version')} != {version}")
+if t.get("file") != os.path.basename(tarball) or t.get("sha256") != sha(tarball): errors.append("macos-arm64-tarball name/sha256 is not the tarball under test")
+if h.get("file") != os.path.basename(headers) or h.get("sha256") != sha(headers): errors.append("skia-headers name/sha256 is not the archive under test")
+tree = h.get("tree_sha256") or ""
+if len(tree) != 64: errors.append("skia-headers tree_sha256 missing")
+for e in errors: print("pack.json:", e, file=sys.stderr)
+if errors: sys.exit(1)
+print(tree)
+PY
+)" || fail "tar(n): ${MANIFEST} does not describe the tars under test"
+"${PACK_ROOT}/scripts/check_tar.sh" "${HEADERS_TARBALL}" "${HEADERS_STAGE_NAME}" \
+    --tree-sha256 "${want_tree}" --extract-to "${VERIFY}/skia-headers" \
+    || fail "tar(n): ${HEADERS_TARBALL} failed the tar hygiene check or is not the tree pack.json records"
+echo "tar(n) PASS: both tars clean; extracted without AppleDouble merging, skia-headers tree == pack.json ${want_tree:0:12}…"
+
 tar -xzf "${TARBALL}" -C "${VERIFY}"
 ditto -x -k "${XCZIP}" "${VERIFY}/xcframework"
+# shellcheck source=scripts/headers.sh
+source "${PACK_ROOT}/scripts/headers.sh"
+[[ "$(headers_tree_sha256 "${VERIFY}/${STAGE_NAME}")" == "$(headers_tree_sha256 "${VERIFY}/tar-check/macos/${STAGE_NAME}")" ]] \
+    || fail "tar(n): the system tar's extraction of ${TARBALL} differs from the non-merging one"
+rm -rf "${VERIFY}/tar-check"
 
 PACKDIR="${VERIFY}/${STAGE_NAME}"
 LIB="${PACKDIR}/lib"
