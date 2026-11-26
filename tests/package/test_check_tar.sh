@@ -109,6 +109,20 @@ mk "${WORK}/case.tgz" d:r f:r/A.h f:r/a.h
 expect "paths differing only in case" 1 "fold together" -- "${WORK}/case.tgz" r
 mk "${WORK}/nfd.tgz" d:r "f:r/$(printf '\xc3\xa9').h" "f:r/e$(printf '\xcc\x81').h"
 expect "paths differing only in Unicode normalization" 1 "fold together" -- "${WORK}/nfd.tgz" r
+# Implied parents (directories the archive does not list as members) are part
+# of the fold check: r/Include/ and r/include/ would be one directory on APFS.
+mk "${WORK}/implied.tgz" d:r f:r/Include/a.h f:r/include/b.h
+mkdir -p "${WORK}/x-implied"
+expect "implied parents differing only in case" 1 "fold together" -- "${WORK}/implied.tgz" r --extract-to "${WORK}/x-implied"
+expect_empty "implied-parent collision: nothing written" "${WORK}/x-implied"
+mk "${WORK}/implied-nfd.tgz" "f:r/$(printf '\xc3\xa9')/a.h" "f:r/e$(printf '\xcc\x81')/b.h"
+expect "implied parents differing only in normalization (no dir members at all)" 1 "fold together" -- "${WORK}/implied-nfd.tgz" r
+mk "${WORK}/implied-file.tgz" d:r f:r/A f:r/a/b.h
+expect "file and implied parent differing only in case" 1 "fold together" -- "${WORK}/implied-file.tgz" r
+mk "${WORK}/implied-ok.tgz" f:r/include/a.h f:r/include/core/b.h f:r/include/c.h
+mkdir -p "${WORK}/x-implied-ok"
+expect "same-spelled implied parents shared (positive)" 0 "3 files" -- "${WORK}/implied-ok.tgz" r --extract-to "${WORK}/x-implied-ok/out"
+if [[ -f "${WORK}/x-implied-ok/out/r/include/core/b.h" && -f "${WORK}/x-implied-ok/out/r/include/c.h" ]]; then echo "ok   implied parents created on extraction"; else echo "FAIL implied parents not created"; failures=$((failures + 1)); fi
 mk "${WORK}/filedir.tgz" d:r f:r/a f:r/a/b.h
 expect "file used as a directory" 1 "file used as a directory" -- "${WORK}/filedir.tgz" r
 mk "${WORK}/both.tgz" d:r f:r/a d:r/a
@@ -122,6 +136,16 @@ expect "tree != reference" 1 "!= reference" -- "${WORK}/clean.tgz" r --reference
 expect "tree != expected hash" 1 "!= expected" -- "${WORK}/clean.tgz" r --tree-sha256 "$(printf '0%.0s' {1..64})"
 mkdir -p "${WORK}/busy" && touch "${WORK}/busy/f"
 expect "non-empty --extract-to refused" 2 "must not exist or be empty" -- "${WORK}/clean.tgz" r --extract-to "${WORK}/busy"
+# A GIVEN option with an empty or malformed value is an error, never "not asked".
+expect "empty --tree-sha256 is an error" 2 "must be 64 lowercase hex" -- "${WORK}/clean.tgz" r --tree-sha256 ""
+expect "uppercase --tree-sha256 is an error" 2 "must be 64 lowercase hex" -- "${WORK}/clean.tgz" r --tree-sha256 "$(tr a-f A-F <<< "${want}")"
+expect "63-digit --tree-sha256 is an error" 2 "must be 64 lowercase hex" -- "${WORK}/clean.tgz" r --tree-sha256 "${want:1}"
+expect "--tree-sha256 with trailing newline is an error" 2 "must be 64 lowercase hex" -- "${WORK}/clean.tgz" r --tree-sha256 "${want}"$'\n'
+expect "empty --reference is an error" 2 "--reference is empty or not a directory" -- "${WORK}/clean.tgz" r --reference ""
+mkdir -p "${WORK}/emptyref"
+expect "--reference with no file is an error" 2 "--reference has no file" -- "${WORK}/clean.tgz" r --reference "${WORK}/emptyref"
+expect "empty --extract-to is an error" 2 "--extract-to is empty" -- "${WORK}/clean.tgz" r --extract-to ""
+expect "option given twice is an error" 2 "usage:" -- "${WORK}/clean.tgz" r --tree-sha256 "${want}" --tree-sha256 "${want}"
 expect "root with a slash refused" 2 "one path component" -- "${WORK}/clean.tgz" r/include
 printf 'not a tar' > "${WORK}/junk.tgz"
 expect "unreadable archive is a tool error" 2 "cannot read" -- "${WORK}/junk.tgz" r

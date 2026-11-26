@@ -95,7 +95,7 @@ echo "zip(j) PASS: no AppleDouble/__MACOSX entries; plain unzip tree == ditto tr
 "${PACK_ROOT}/scripts/check_tar.sh" "${TARBALL}" "${STAGE_NAME}" --extract-to "${VERIFY}/tar-check/macos" \
     || fail "tar(n): ${TARBALL} failed the tar hygiene check"
 want_tree="$(python3 - "${MANIFEST}" "${TARBALL}" "${HEADERS_TARBALL}" "${VERSION}" <<'PY'
-import hashlib, json, os, sys
+import hashlib, json, os, re, sys
 manifest, tarball, headers, version = sys.argv[1:5]
 m = json.load(open(manifest))
 sha = lambda p: hashlib.sha256(open(p, "rb").read()).hexdigest()
@@ -105,25 +105,39 @@ errors = []
 if m.get("version") != version: errors.append(f"version {m.get('version')} != {version}")
 if t.get("file") != os.path.basename(tarball) or t.get("sha256") != sha(tarball): errors.append("macos-arm64-tarball name/sha256 is not the tarball under test")
 if h.get("file") != os.path.basename(headers) or h.get("sha256") != sha(headers): errors.append("skia-headers name/sha256 is not the archive under test")
-tree = h.get("tree_sha256") or ""
-if len(tree) != 64: errors.append("skia-headers tree_sha256 missing")
+tree = h.get("tree_sha256")
+if not (isinstance(tree, str) and re.fullmatch(r"[0-9a-f]{64}", tree)):
+    errors.append(f"skia-headers tree_sha256 is not 64 lowercase hex digits: {tree!r}")
 for e in errors: print("pack.json:", e, file=sys.stderr)
 if errors: sys.exit(1)
 print(tree)
 PY
 )" || fail "tar(n): ${MANIFEST} does not describe the tars under test"
+[[ "${want_tree}" =~ ^[0-9a-f]{64}$ ]] || fail "tar(n): tree_sha256 read from ${MANIFEST} is not a sha256: '${want_tree}'"
 "${PACK_ROOT}/scripts/check_tar.sh" "${HEADERS_TARBALL}" "${HEADERS_STAGE_NAME}" \
     --tree-sha256 "${want_tree}" --extract-to "${VERIFY}/skia-headers" \
     || fail "tar(n): ${HEADERS_TARBALL} failed the tar hygiene check or is not the tree pack.json records"
-echo "tar(n) PASS: both tars clean; extracted without AppleDouble merging, skia-headers tree == pack.json ${want_tree:0:12}…"
 
 tar -xzf "${TARBALL}" -C "${VERIFY}"
 ditto -x -k "${XCZIP}" "${VERIFY}/xcframework"
 # shellcheck source=scripts/headers.sh
 source "${PACK_ROOT}/scripts/headers.sh"
-[[ "$(headers_tree_sha256 "${VERIFY}/${STAGE_NAME}")" == "$(headers_tree_sha256 "${VERIFY}/tar-check/macos/${STAGE_NAME}")" ]] \
-    || fail "tar(n): the system tar's extraction of ${TARBALL} differs from the non-merging one"
+# tree_of <dir>: its headers_tree_sha256, or the gate fails — a missing or
+# empty tree, a failed hash or output that is not a sha256 never counts.
+tree_of() {
+    local dir="$1" out
+    [[ -d "${dir}" && -n "$(find "${dir}" -type f -print -quit)" ]] || fail "tar(n): no tree to hash at ${dir}"
+    out="$(headers_tree_sha256 "${dir}")" || fail "tar(n): hashing ${dir} failed"
+    [[ "${out}" =~ ^[0-9a-f]{64}$ ]] || fail "tar(n): hashing ${dir} gave no sha256: '${out}'"
+    printf '%s' "${out}"
+}
+sys_tree="$(tree_of "${VERIFY}/${STAGE_NAME}")" || exit 1
+raw_tree="$(tree_of "${VERIFY}/tar-check/macos/${STAGE_NAME}")" || exit 1
+[[ "${sys_tree}" == "${raw_tree}" ]] \
+    || fail "tar(n): the system tar's extraction of ${TARBALL} (${sys_tree}) differs from the non-merging one (${raw_tree})"
 rm -rf "${VERIFY}/tar-check"
+# Only now, with every part of (n) done:
+echo "tar(n) PASS: both tars clean; extracted without AppleDouble merging, skia-headers tree == pack.json ${want_tree:0:12}…; system tar == non-merging extraction"
 
 PACKDIR="${VERIFY}/${STAGE_NAME}"
 LIB="${PACKDIR}/lib"

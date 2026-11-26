@@ -15,7 +15,8 @@
 #        "." / ".." / empty component, no backslash; no path twice; no path
 #        that is a file and also a directory or a parent; no two paths that one
 #        case-insensitive, normalization-insensitive file system (APFS) would
-#        fold into one
+#        fold into one — checked over every path the extraction would create,
+#        including parent directories the archive does not list as members
 #   (t4) only after (t1)–(t3) pass: the archive is extracted by THIS script —
 #        directories and regular files only, written one at a time with
 #        exclusive create, no macOS metadata merging, nothing else honoured —
@@ -25,7 +26,10 @@
 #        This is a local extraction that does NOT merge AppleDouble; it is not
 #        GNU tar, and the Linux job of the release workflow stays a separate gate.
 #
-# A rejected archive is never extracted. Exit 0 PASS, 1 FAIL, 2 usage/tool error.
+# An archive rejected by (t1)–(t3) is never extracted: nothing is written. A
+# tree-hash mismatch (t4) is found AFTER extraction (into --extract-to or a
+# temporary directory). Exit 0 PASS, 1 FAIL, 2 usage/tool error; a given
+# option with an empty or malformed value is an error (2), never "not asked".
 # Only reads <tar.gz>; writes only into --extract-to (must not exist, or be
 # empty) or a temporary directory it removes.
 set -euo pipefail
@@ -37,22 +41,30 @@ fail() { echo "check_tar FAIL: $*" >&2; exit 1; }
 
 [[ $# -ge 2 ]] || usage
 TARBALL="$1"; ROOT="$2"; shift 2
-REFERENCE=""; WANT_TREE=""; EXTRACT=""
+# HAVE_*: the option was GIVEN. A given option with an empty or malformed value
+# is an error, never "no comparison asked for".
+REFERENCE=""; WANT_TREE=""; EXTRACT=""; HAVE_REF=0; HAVE_TREE=0; HAVE_EXTRACT=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --reference)   [[ $# -ge 2 ]] || usage; REFERENCE="$2"; shift 2 ;;
-        --tree-sha256) [[ $# -ge 2 ]] || usage; WANT_TREE="$2"; shift 2 ;;
-        --extract-to)  [[ $# -ge 2 ]] || usage; EXTRACT="$2"; shift 2 ;;
+        --reference)   [[ $# -ge 2 && ${HAVE_REF} -eq 0 ]] || usage; REFERENCE="$2"; HAVE_REF=1; shift 2 ;;
+        --tree-sha256) [[ $# -ge 2 && ${HAVE_TREE} -eq 0 ]] || usage; WANT_TREE="$2"; HAVE_TREE=1; shift 2 ;;
+        --extract-to)  [[ $# -ge 2 && ${HAVE_EXTRACT} -eq 0 ]] || usage; EXTRACT="$2"; HAVE_EXTRACT=1; shift 2 ;;
         *) usage ;;
     esac
 done
 [[ -f "${TARBALL}" ]] || die "no such archive: ${TARBALL}"
 [[ -n "${ROOT}" && "${ROOT}" != */* && "${ROOT}" != "." && "${ROOT}" != ".." ]] || die "root must be one path component: '${ROOT}'"
-[[ -z "${REFERENCE}" || -d "${REFERENCE}" ]] || die "reference is not a directory: ${REFERENCE}"
-[[ -z "${WANT_TREE}" || "${WANT_TREE}" =~ ^[0-9a-f]{64}$ ]] || die "--tree-sha256 must be 64 lowercase hex digits"
+if (( HAVE_REF )); then
+    [[ -n "${REFERENCE}" && -d "${REFERENCE}" ]] || die "--reference is empty or not a directory: '${REFERENCE}'"
+    [[ -n "$(find "${REFERENCE}" -type f -print -quit)" ]] || die "--reference has no file: ${REFERENCE}"
+fi
+if (( HAVE_TREE )); then
+    [[ "${WANT_TREE}" =~ ^[0-9a-f]{64}$ ]] || die "--tree-sha256 must be 64 lowercase hex digits, got '${WANT_TREE}'"
+fi
+(( ! HAVE_EXTRACT )) || [[ -n "${EXTRACT}" ]] || die "--extract-to is empty"
 
 CLEANUP=""
-if [[ -z "${EXTRACT}" ]]; then
+if (( ! HAVE_EXTRACT )); then
     EXTRACT="$(mktemp -d "${TMPDIR:-/tmp}/check_tar.XXXXXX")" || die "mktemp failed"
     CLEANUP="${EXTRACT}"
 elif [[ -e "${EXTRACT}" ]]; then
@@ -85,7 +97,27 @@ except Exception as e:  # unreadable archive is a tool/input error, not a verdic
 for key in (tf.pax_headers or {}):
     if is_meta(key):
         note("global pax header with host metadata", key)
-seen, folded, files, dirs = set(), {}, set(), set()
+seen, files, dirs = set(), set(), set()
+# Every path the extraction would create — each member AND every implied parent
+# directory of it, listed in the archive or not — keyed the way APFS compares
+# names (NFD + case fold). One key may have one spelling and one kind.
+entries = {}  # key -> [spelling, kind, explicit]
+def register(path, kind, explicit, member):
+    key = unicodedata.normalize("NFD", path).casefold()
+    e = entries.get(key)
+    if e is None:
+        entries[key] = [path, kind, explicit]
+        return
+    if e[0] != path:
+        note("paths that fold together on a case-insensitive file system", f"{e[0]} / {path} (member {member})")
+        return
+    if e[1] != kind:
+        if e[2] and explicit:
+            note("path is both a file and a directory", path)
+        else:
+            note("file used as a directory", member)
+        return
+    e[2] = e[2] or explicit
 for m in members:
     n = m.name
     parts = n.split("/")
@@ -109,19 +141,11 @@ for m in members:
     if n in seen:
         note("path appears twice", n)
     seen.add(n)
-    key = unicodedata.normalize("NFD", n).casefold()
-    if key in folded and folded[key] != n:
-        note("paths that fold together on a case-insensitive file system", f"{folded[key]} / {n}")
-    folded.setdefault(key, n)
+    for i in range(1, len(parts)):
+        register("/".join(parts[:i]), "dir", False, n)
+    register(n, "dir" if m.isdir() else "file", True, n)
 if root in files:
     note("root is a file", root)
-for n in seen:
-    parts = n.split("/")
-    for i in range(1, len(parts)):
-        if "/".join(parts[:i]) in files:
-            note("file used as a directory", n); break
-    if n in files and n in dirs:
-        note("path is both a file and a directory", n)
 if not files:
     note("archive has no regular file", tar_path)
 if problems:
@@ -164,15 +188,17 @@ read -r n_members n_files n_dirs <<< "${stats}"
 
 # shellcheck source=scripts/headers.sh
 source "${PACK_ROOT}/scripts/headers.sh"
+[[ -d "${EXTRACT}/${ROOT}" ]] || die "extraction produced no ${ROOT}/"
 tree="$(headers_tree_sha256 "${EXTRACT}/${ROOT}")" || die "hashing the extracted tree failed"
-[[ "${tree}" =~ ^[0-9a-f]{64}$ ]] || die "hashing the extracted tree failed"
+[[ "${tree}" =~ ^[0-9a-f]{64}$ ]] || die "hashing the extracted tree gave no sha256: '${tree}'"
 note=""
-if [[ -n "${REFERENCE}" ]]; then
+if (( HAVE_REF )); then
     ref="$(headers_tree_sha256 "${REFERENCE}")" || die "hashing the reference tree failed"
+    [[ "${ref}" =~ ^[0-9a-f]{64}$ ]] || die "hashing the reference tree gave no sha256: '${ref}'"
     [[ "${tree}" == "${ref}" ]] || fail "${TARBALL}: extracted tree ${tree} != reference ${REFERENCE} ${ref}"
     note="${note} == reference"
 fi
-if [[ -n "${WANT_TREE}" ]]; then
+if (( HAVE_TREE )); then
     [[ "${tree}" == "${WANT_TREE}" ]] || fail "${TARBALL}: extracted tree ${tree} != expected ${WANT_TREE}"
     note="${note} == expected"
 fi
