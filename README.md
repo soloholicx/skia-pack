@@ -73,6 +73,16 @@ commits, and only commits that succeed; it is not a background-safety guarantee 
 an app must still stop submitting GPU work once it is inactive. `verify.sh` (k) checks the
 compiled objects of every release. The macOS slice is unaffected.
 
+**iOS: `WrapCAMetalLayer` with no drawable.** A surface made with
+`SkSurfaces::WrapCAMetalLayer` asks the layer for its drawable only when Skia flushes. If
+`nextDrawable` returns nil at that point, the render pass has no render target. Under Metal API
+validation that aborts the process ("No rendertargets set in RenderPassDescriptor"); without
+validation no abort was seen. This was observed in the iOS Simulator only, and the same way with
+150.2.0, the 150.2.1 candidate and 157.1.0, so it is existing Skia behaviour and not caused by the
+wait above. Whether the wait happens on this path is not verified. Apps that cannot rule out a
+nil drawable should acquire the drawable first, skip the frame when there is none, and wrap
+its texture (for example with `SkSurfaces::WrapBackendTexture`).
+
 **iOS: no ICU data-file loading (from 157.1.0).** Both iOS slices are built with
 `-DUCONFIG_NO_FILE_IO=1`, so ICU common no longer loads data from files: the `ICU_DATA`
 environment variable is not read, a directory set with `u_setDataDirectory` is recorded but
