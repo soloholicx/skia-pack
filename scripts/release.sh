@@ -258,8 +258,10 @@ if [[ "${MODE}" == "new" ]]; then
     ./scripts/verify.sh
     ./scripts/verify_consumer.sh local
     # One Skia per process, macOS side, on the packaged bytes (the Linux side
-    # ran in the build-linux run the candidate comes from).
-    ./scripts/verify_rust_consumer.sh "build/verify/skia-pack-${VERSION}-macos-arm64" "artifacts/skia-pack-${VERSION}-skia-headers"
+    # ran in the build-linux run the candidate comes from). The headers are the
+    # tree verify.sh (n) extracted from the skia-headers ARCHIVE, not the
+    # staging directory it was made from.
+    ./scripts/verify_rust_consumer.sh "build/verify/skia-pack-${VERSION}-macos-arm64" "build/verify/skia-headers/skia-pack-${VERSION}-skia-headers"
 
     # ----------------------------------------------------------- 2. freeze ----
     [[ -z "$(git status --porcelain)" ]] || refuse "the build dirtied the working tree"
